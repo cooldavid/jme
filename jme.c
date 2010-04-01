@@ -2122,7 +2122,11 @@ jme_set_multi(struct net_device *netdev)
 	} else if (netdev->flags & IFF_ALLMULTI) {
 		jme->reg_rxmcs |= RXMCS_ALLMULFRAME;
 	} else if (netdev->flags & IFF_MULTICAST) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,34)
 		struct dev_mc_list *mclist;
+#else
+		struct netdev_hw_addr *ha;
+#endif
 		int bit_nr;
 
 		jme->reg_rxmcs |= RXMCS_MULFRAME | RXMCS_MULFILTERED;
@@ -2130,10 +2134,16 @@ jme_set_multi(struct net_device *netdev)
 		for (i = 0, mclist = netdev->mc_list;
 			mclist && i < netdev->mc_count;
 			++i, mclist = mclist->next) {
-#else
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,34)
 		netdev_for_each_mc_addr(mclist, netdev) {
+#else
+		netdev_for_each_mc_addr(ha, netdev) {
 #endif
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,34)
 			bit_nr = ether_crc(ETH_ALEN, mclist->dmi_addr) & 0x3F;
+#else
+			bit_nr = ether_crc(ETH_ALEN, ha->addr) & 0x3F;
+#endif
 			mc_hash[bit_nr >> 5] |= 1 << (bit_nr & 0x1F);
 		}
 
