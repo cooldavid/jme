@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9"
+#define DRV_VERSION	"0.9a"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -93,17 +93,20 @@ enum pci_conf_dcsr_mrrs_vals {
 #define MIN_ETHERNET_PACKET_SIZE 60
 
 enum dynamic_pcc_values {
+	PCC_OFF		= 0,
 	PCC_P1		= 1,
 	PCC_P2		= 2,
 	PCC_P3		= 3,
 
+	PCC_OFF_TO	= 0,
 	PCC_P1_TO	= 1,
-	PCC_P2_TO	= 250,
-	PCC_P3_TO	= 1000,
+	PCC_P2_TO	= 64,
+	PCC_P3_TO	= 128,
 
+	PCC_OFF_CNT	= 0,
 	PCC_P1_CNT	= 1,
-	PCC_P2_CNT	= 64,
-	PCC_P3_CNT	= 255,
+	PCC_P2_CNT	= 16,
+	PCC_P3_CNT	= 32,
 };
 struct dynpcc_info {
 	unsigned long	last_bytes;
@@ -387,6 +390,8 @@ struct jme_adapter {
 	atomic_t		link_changing;
 	atomic_t		tx_cleaning;
 	atomic_t		rx_cleaning;
+	atomic_t		rx_empty;
+	struct napi_struct	napi;
 	DECLARE_NET_DEVICE_STATS
 };
 enum shadow_reg_val {
@@ -397,6 +402,7 @@ enum jme_flags_bits {
 	JME_FLAG_SSET		= 0x00000002,
 	JME_FLAG_TXCSUM		= 0x00000004,
 	JME_FLAG_TSO		= 0x00000008,
+	JME_FLAG_POLL		= 0x00000010,
 };
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
