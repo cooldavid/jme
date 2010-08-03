@@ -522,9 +522,10 @@ jme_free_tx_resources(struct jme_adapter *jme)
 				dev_kfree_skb(txbi->skb);
 				txbi->skb = NULL;
 			}
-			txbi->mapping	= 0;
-			txbi->len	= 0;
-			txbi->nr_desc	= 0;
+			txbi->mapping		= 0;
+			txbi->len		= 0;
+			txbi->nr_desc		= 0;
+			txbi->start_xmit	= 0;
 		}
 
 		dma_free_coherent(&(jme->pdev->dev),
@@ -1329,21 +1330,32 @@ jme_intr_msi(struct jme_adapter *jme, __u32 intrstat)
 	 */
 	jwrite32f(jme, JME_IENC, INTR_ENABLE);
 
-	/*
-	 * Write 1 clear interrupt status
-	 */
-	jwrite32f(jme, JME_IEVE, intrstat);
-
 	if(intrstat & (INTR_LINKCH | INTR_SWINTR)) {
+		/*
+		 * Link change event is critical
+		 * all other events are ignored
+		 */
+		jwrite32(jme, JME_IEVE, intrstat);
 		tasklet_schedule(&jme->linkch_task);
 		goto out_reenable;
 	}
 
-	if(intrstat & INTR_TMINTR)
+	if(intrstat & INTR_TMINTR) {
+		jwrite32(jme, JME_IEVE, INTR_TMINTR);
 		tasklet_schedule(&jme->pcc_task);
+	}
 
-	if(intrstat & (INTR_PCCTXTO | INTR_PCCTX))
+	if(intrstat & (INTR_PCCTXTO | INTR_PCCTX)) {
+		jwrite32(jme, JME_IEVE, INTR_PCCTXTO | INTR_PCCTX | INTR_TX0);
 		tasklet_schedule(&jme->txclean_task);
+	}
+
+	if((intrstat & (INTR_PCCRX0TO | INTR_PCCRX0 | INTR_RX0EMP))) {
+		jwrite32(jme, JME_IEVE, (intrstat & (INTR_PCCRX0TO |
+						     INTR_PCCRX0 |
+						     INTR_RX0EMP)) |
+					INTR_RX0);
+	}
 
 	if(jme->flags & JME_FLAG_POLL) {
 		if(intrstat & INTR_RX0EMP)
@@ -1361,8 +1373,7 @@ jme_intr_msi(struct jme_adapter *jme, __u32 intrstat)
 			atomic_inc(&jme->rx_empty);
 			tasklet_schedule(&jme->rxempty_task);
 		}
-
-		if(intrstat & (INTR_PCCRX0TO | INTR_PCCRX0))
+		else if(intrstat & (INTR_PCCRX0TO | INTR_PCCRX0))
 			tasklet_schedule(&jme->rxclean_task);
 	}
 
@@ -1548,6 +1559,20 @@ jme_set_100m_half(struct jme_adapter *jme)
 		jwrite32(jme, JME_GHC, GHC_SPEED_100M | GHC_LINK_POLL);
 	else
 		jwrite32(jme, JME_GHC, GHC_SPEED_100M);
+}
+
+#define JME_WAIT_LINK_TIME 2000 /* 2000ms */
+static void
+jme_wait_link(struct jme_adapter *jme)
+{
+	__u32 phylink, to = JME_WAIT_LINK_TIME;
+
+	mdelay(1000);
+	phylink = jme_linkstat_from_phy(jme);
+	while(!(phylink & PHY_LINK_UP) && (to -= 10) > 0) {
+		mdelay(10);
+		phylink = jme_linkstat_from_phy(jme);
+	}
 }
 
 static void
@@ -1822,6 +1847,7 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
 			(jiffies - txbi->start_xmit) >= TX_TIMEOUT &&
 			txbi->skb)) {
 		netif_stop_queue(jme->dev);
+		queue_dbg(jme->dev->name, "TX Queue Stopped @(%lu).\n", jiffies);
 	}
 }
 
@@ -1861,7 +1887,8 @@ jme_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	jme_map_tx_skb(jme, skb, idx);
 	jme_fill_first_tx_desc(jme, skb, idx);
 
-	tx_dbg(jme->dev->name, "Xmit: %d+%d\n", idx, skb_shinfo(skb)->nr_frags + 2);
+	tx_dbg(jme->dev->name, "Xmit: %d+%d @(%lu)\n",
+			idx, skb_shinfo(skb)->nr_frags + 2, jiffies);
 
 	jwrite32(jme, JME_TXCS, jme->reg_txcs |
 				TXCS_SELECT_QUEUE0 |
@@ -2696,7 +2723,7 @@ jme_init_one(struct pci_dev *pdev,
 	jme->reg_rxcs = RXCS_DEFAULT;
 	jme->reg_rxmcs = RXMCS_DEFAULT;
 	jme->reg_txpfc = 0;
-	jme->reg_pmcs = PMCS_LFEN | PMCS_LREN | PMCS_MFEN;
+	jme->reg_pmcs = PMCS_MFEN;
 	jme->flags = JME_FLAG_TXCSUM | JME_FLAG_TSO;
 
 	/*
@@ -2847,7 +2874,7 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 	netif_device_detach(netdev);
 	netif_stop_queue(netdev);
 	jme_stop_irq(jme);
-	jme_free_irq(jme);
+	//jme_free_irq(jme);
 
 	while(--timeout > 0 &&
 	(
@@ -2863,27 +2890,33 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 	jme_disable_shadow(jme);
 
 	if(netif_carrier_ok(netdev)) {
+		if(jme->flags & JME_FLAG_POLL)
+			jme_polling_mode(jme);
+
 		jme_stop_pcc_timer(jme);
 		jme_reset_mac_processor(jme);
 		jme_free_rx_resources(jme);
 		jme_free_tx_resources(jme);
 		netif_carrier_off(netdev);
 		jme->phylink = 0;
-
-		if(jme->flags & JME_FLAG_POLL)
-			jme_polling_mode(jme);
 	}
 
 
 	pci_save_state(pdev);
 	if(jme->reg_pmcs) {
 		jme_set_100m_half(jme);
+
+		if(jme->reg_pmcs & (PMCS_LFEN | PMCS_LREN))
+			jme_wait_link(jme);
+
 		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
+		pci_enable_wake(pdev, PCI_D1, true);
 		pci_enable_wake(pdev, PCI_D3hot, true);
 		pci_enable_wake(pdev, PCI_D3cold, true);
 	}
 	else {
 		jme_phy_off(jme);
+		pci_enable_wake(pdev, PCI_D1, false);
 		pci_enable_wake(pdev, PCI_D3hot, false);
 		pci_enable_wake(pdev, PCI_D3cold, false);
 	}
@@ -2908,7 +2941,7 @@ jme_resume(struct pci_dev *pdev)
 
 	jme_reset_mac_processor(jme);
 	jme_enable_shadow(jme);
-	jme_request_irq(jme);
+	//jme_request_irq(jme);
 	jme_start_irq(jme);
 	netif_device_attach(netdev);
 

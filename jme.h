@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9d"
+#define DRV_VERSION	"0.9e"
 #define PFX DRV_NAME	": "
 
 #define JME_GE_DEVICE 0x250
@@ -124,7 +124,7 @@ struct dynpcc_info {
 #define PCC_P3_THRESHOLD 2*1024*1024
 #define PCC_P2_THRESHOLD 800
 #define PCC_INTR_THRESHOLD 800
-#define PCC_TX_TO 333
+#define PCC_TX_TO 1000
 #define PCC_TX_CNT 8
 
 /*
@@ -921,7 +921,7 @@ enum jme_gpreg0_vals {
 	GPREG0_PHYADDR_1	= 0x00000001,
 
 	GPREG0_DEFAULT		= GPREG0_PCIRLMT_4 |
-				  GPREG0_PCCNOMUTCLR |
+//				  GPREG0_PCCNOMUTCLR |
 				  GPREG0_PCCTMR_1us |
 				  GPREG0_PHYADDR_1,
 };
