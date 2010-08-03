@@ -1,0 +1,202 @@
+Version 1.0.6 -- 03/19/2010
+	* Fix memory leak while receiving packets from unregistered VLAN.
+	* Protect vlgrp structure by pause RX actions. Instead of adding
+	  lock in the hot zone.
+	* Merge new updates from mainline kernel.
+
+Version 1.0.5 -- 06/20/2009
+	* Fixed unmatched tasklet_disable and tasklet_enable pair.
+	* Allocate ring buffer information data while module initialize,
+	  instead of using global space.
+	* Drop shadow register support, due to buggy hardware.
+
+Version 1.0.4 -- ??/??/2008
+	* remove unused #include <version.h>
+		By: Huang Weiyi <weiyi.huang@gmail.com>
+	* fix build error at csum_ipv6_magic()
+		By: Kamalesh Babulal <kamalesh@linux.vnet.ibm.com>
+
+Version 1.0.3 -- 10/09/2008
+	* Fixing shared IRQ problem, fixed by akeem.
+	* Add RSS_PATCH, HALF_MODE_PATCH bit setting for JMC250_rev 0x11.
+	* Added ifdef CONFIG_PM for prevent warnings with CONFIG_PM disabled.
+
+Version 1.0.2 -- 09/15/2008
+	* Modify version check for rev 11 buggy hardware.
+
+Version 1.0.1 -- 09/05/2008
+	* Removed SPI access to flash device through ioctl.
+	  Will be implement with MTD block device and SPI Master in the future.
+
+Version 1.0 -- 08/29/2008
+	* Passed checkpatch.pl
+	* Passed sparse cleanly.
+	* Tested on various check that mentioned in SubmitChecklist.
+	* Supporting message level controlled by ethtool.
+	* Remove backward compatible codes.
+	  (But still kept in non-mainline driver)
+	* Add pseudo hot-plug support.
+	* Fixed fragmented IP packet's TCP/UDP checksum error.
+	* Fine tune some locks, and use atomic bit operations.
+	* Add SPI interface through ioctl for flash re-programing.
+	* Fix high-loading link-down hardware reset unclean problem.
+	* Link-Change tasklet is modified to process all link-change interrupt.
+	* Fix potential racy atomic locks.
+	* Add work-arround for rev 11
+	* Add register debug human readable facilities.
+
+Version 0.9e -- 08/13/2008
+	* Fix PCC ISR handling bug.
+	* Allow PCCMTUCLR
+	* Wait phylink if PHY WoL is enabled, preventing
+	  immediate resume.
+	* Default to turn on Magic Frame WoL only.
+	* Add pci_enable_wake on S1.
+	* Don't release/request IRQ on suspend/resume.
+
+
+Version 0.9d-msix -- 08/14/2008
+	* Add MSIX support.
+	* Since I still have no idea how to explicitly balance
+	  the load to CPUs, the 1.0 version won't include this
+	  feature.
+
+
+Version 0.9d -- 08/13/2008
+	* Fix watchdog bug.
+	* Add jmc260 support.
+
+
+Version 0.9c -- 08/11/2008
+	* Fix change mac address bug.
+	* Fix PHY Addr polling bug.
+	* Add eeprom read/write support for ethtool
+	* Add PHY Register dump for ethtool
+
+
+Version 0.9b -- 08/08/2008
+	* Add FPGA Support.
+	* Fix NAPI <-> Adaptive PCC mode switching bug.
+	* Default use Adaptive PCC mode.
+	* Modified watchdog.
+	* Support NAPI for 2.6.22 kernel
+
+
+Version 0.9a -- 08/07/2008
+	* Implement NAPI, use ethtool -C ethX adaptive-rx [on|off] to switch
+	  between NAPI or Dynamic PCC mode at runtime.
+	* Fix Dynamic PCC switch bug.
+	* Pass packets with error checksum to host instead of drop.
+
+
+Version 0.9 -- 08/04/2008
+	* Implement Scatter-Gather offloading.
+	* Implement TCP Segment offloading.
+	* Pause TX queue until TX queue have sufficient space.
+	*	(Saved a lot CPU)
+	* Turn on WOL by default.
+	* Setup Wakeup Frame to not possible matched pattern.
+	* Tested TCP/UDP csum over IPv4/IPv6 over VLAN all working fine! ^^
+	* Tested TSO over IPv4/IPv6 over VLAN all working fine! ^^
+
+
+Version 0.8 -- 08/02/2008
+	* Remember last link status for interface up/down.
+	* When driver loaded/unloaded and interface down, change
+	*	link to 10/half force for power saving.
+	* Check MTU setting when setting tx csum.
+	* Implement VLAN offloading.
+
+
+Version 0.7 -- 08/01/2008
+	* Added Suspend/Resume support.
+	* Added Wake on LAN support.
+
+
+Version 0.6 -- 07/30/2008
+	* Use NIC Timer for dynamic PCC.
+	* Add another PCC rule for heavy error packet load.
+	* Report and set GHC when change duplex at 10/100 force mode.
+	* Implement Jumboframe.
+	* Implement MSI.
+	* Backdoor for changing "FIFO Threshold for processing next packet"
+	*	Using:
+	*		ethtool -C eth1 adaptive-rx on adaptive-tx on \
+	*		rx-usecs 250 rx-frames-low N
+	*		N := 16 | 32 | 64 | 128
+
+
+Version 0.5 -- 07/25/2008
+	* Add tx timeout watchdog.
+	* Handle PHY Force mode correctly.
+		If AN is off, mmaped PHY Status will not update, need to
+ 		get information using SMI.
+		Our NIC does not support 1000M Force Mode, return invalid
+		if user try to set that.
+	* Should work fine when hot-[un]pluged with pcie-hotplug driver.
+	* Record TX Collision error count on half-duplex mode.
+	* Implement tx ipv6/ip/tcp/udp checksum offloading
+	* Implement rx ipv6/ip/tcp/udp checksum offloading
+	* Add restart-AN support for ethtool.
+	* Add pause control for ethtool.
+	* Add register dump support for ethtool.
+	* Add PCC information for ethtool.
+	* Set Transmit Timer/Retry at Half Duplex Mode.
+	* Change "FIFO Threshold for processing next packet" of RXCS
+		default to 32QW (Originally 128QW)
+
+
+Version 0.4 -- 07/24/2008
+	* Support runtime change link speed.
+
+
+Version 0.3 -- 07/22/2008
+	* Clean up some code, try making it more fit to CodingStyle
+	* Add prepad cache-line optimize support.
+	* Basic RX PCC structure added.
+	* Basic TX PCC structure added.
+	* Reset PHY Processor and turn on ALL advertise by default.
+	* Rewrite TX related functions.
+	* Added 64bit address for PCI DMA support.
+	* Dynamic PCC Adjustment.
+
+
+Version 0.2 -- 07/17/2008
+	* Handle multiple RX descriptor per packet (Received a LONG packet.)
+	* Drop error RX packets, and update the counter.
+	* Using interrupt shadow register.
+	* Using sk_buff as receive buffer, NIC directly DMA to sk_buff->data.
+	* Use sk_buff kernel provided for NIC directly DMA to send packet.
+	* Use tasklet for tx desc cleanup. (Reduce ISR latency)
+	* Rearange ring data structure for CPU caching efficiency.
+	* Setup RXCS with correct values.
+	* Older(tested to 2.6.18) linux kernel support.
+	* Added a tasklet for link status change.
+	* Added a tasklet for processing incoming packets.
+	* Check DMA MRRS from pci config space, and fill TXCS.
+	* Save TXCS value in local memory, reduce register read time.
+
+
+Version 0.1 -- 07/11/2008
+	* Basic function completed.
+	* Interrupt handler and xmit function are implemented with
+	  care of multiple CPU enviroment.
+	* All offload engine are not used.
+	* PCC/MSI are not used.
+	* Redudent memory copy are used. (Will be removed in the future)
+	* Acceptible performance.
+
+		Testing platform: Intel(R) Pentium(R) 4 CPU 3.00GHz
+				  JMicron JMC250
+
+		Peer platforman:  AMD Athlon(tm) 64 Processor 3000+
+				  D-Link DGE-530T (Marvell 88E8001)
+
+			Speed		CPU Usage
+		TCP tx:	7xMB		40%
+		TCP rx:	3xMB		30%
+
+		Note: These speed could be limited by peer, since CPU
+		      load is not much, and queue is not full.
+
+
