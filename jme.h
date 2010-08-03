@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.6"
+#define DRV_VERSION	"0.7"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -44,6 +44,12 @@
 #define	rx_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
 #else
 #define rx_dbg(args...)
+#endif
+
+#ifdef QUEUE_DEBUG
+#define	queue_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#else
+#define queue_dbg(args...)
 #endif
 
 #ifdef CSUM_DEBUG
@@ -360,9 +366,11 @@ struct jme_adapter {
 	__u32			reg_rxcs;
 	__u32			reg_rxmcs;
 	__u32			reg_ghc;
+	__u32			reg_pmcs;
 	__u32			phylink;
 	__u8			mrrs;
-	unsigned int		oldmtu;
+	struct ethtool_cmd	old_ecmd;
+	unsigned int		old_mtu;
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
 	atomic_t		link_changing;
@@ -375,6 +383,7 @@ enum shadow_reg_val {
 };
 enum jme_flags_bits {
 	JME_FLAG_MSI		= 0x00000001,
+	JME_FLAG_SSET		= 0x00000002,
 };
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
@@ -484,7 +493,7 @@ enum jme_txcs_value {
 	TXCS_DEFAULT		= TXCS_FIFOTH_4QW |
 				  TXCS_BURST,
 };
-#define JME_TX_DISABLE_TIMEOUT 5 /* 5 msec */
+#define JME_TX_DISABLE_TIMEOUT 10 /* 10 msec */
 
 /*
  * TX MAC Control/Status Bits
@@ -617,7 +626,7 @@ enum jme_rxcs_values {
 				  RXCS_RETRYGAP_256ns |
 				  RXCS_RETRYCNT_32,
 };
-#define JME_RX_DISABLE_TIMEOUT 5 /* 5 msec */
+#define JME_RX_DISABLE_TIMEOUT 10 /* 10 msec */
 
 /*
  * RX MAC Control/Status Bits
@@ -686,6 +695,34 @@ enum jme_ghc_speed_val {
 	GHC_SPEED_10M	= 0x00000010,
 	GHC_SPEED_100M	= 0x00000020,
 	GHC_SPEED_1000M	= 0x00000030,
+};
+
+/*
+ * Power management control and status register
+ */
+enum jme_pmcs_bit_masks {
+	PMCS_WF7DET	= 0x80000000,
+	PMCS_WF6DET	= 0x40000000,
+	PMCS_WF5DET	= 0x20000000,
+	PMCS_WF4DET	= 0x10000000,
+	PMCS_WF3DET	= 0x08000000,
+	PMCS_WF2DET	= 0x04000000,
+	PMCS_WF1DET	= 0x02000000,
+	PMCS_WF0DET	= 0x01000000,
+	PMCS_LFDET	= 0x00040000,
+	PMCS_LRDET	= 0x00020000,
+	PMCS_MFDET	= 0x00010000,
+	PMCS_WF7EN	= 0x00008000,
+	PMCS_WF6EN	= 0x00004000,
+	PMCS_WF5EN	= 0x00002000,
+	PMCS_WF4EN	= 0x00001000,
+	PMCS_WF3EN	= 0x00000800,
+	PMCS_WF2EN	= 0x00000400,
+	PMCS_WF1EN	= 0x00000200,
+	PMCS_WF0EN	= 0x00000100,
+	PMCS_LFEN	= 0x00000004,
+	PMCS_LREN	= 0x00000002,
+	PMCS_MFEN	= 0x00000001,
 };
 
 /*
