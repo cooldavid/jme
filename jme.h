@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9a"
+#define DRV_VERSION	"0.9b"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -118,7 +118,7 @@ struct dynpcc_info {
 };
 #define PCC_INTERVAL_US	100000
 #define PCC_INTERVAL (HZ / (1000000/PCC_INTERVAL_US))
-#define PCC_P3_THRESHOLD 3*1024*1024
+#define PCC_P3_THRESHOLD 2*1024*1024
 #define PCC_P2_THRESHOLD 800
 #define PCC_INTR_THRESHOLD 800
 #define PCC_TX_TO 333
@@ -318,6 +318,7 @@ struct jme_buffer_info {
 	dma_addr_t mapping;
 	int len;
 	int nr_desc;
+	unsigned long start_xmit;
 };
 
 #define MAX_RING_DESC_NR	1024
@@ -331,8 +332,7 @@ struct jme_ring {
 	struct jme_buffer_info bufinf[MAX_RING_DESC_NR];
 
         int next_to_use;
-        int next_to_clean;
-
+        atomic_t next_to_clean;
 	atomic_t nr_free;
 };
 
@@ -345,6 +345,41 @@ struct jme_ring {
 #define NET_STAT(priv) priv->dev->stats
 #define NETDEV_GET_STATS(netdev, fun_ptr)
 #define DECLARE_NET_DEVICE_STATS
+#endif
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+#define DECLARE_NAPI_STRUCT
+#define NETIF_NAPI_SET(dev, napis, pollfn, q) \
+	dev->poll = pollfn; \
+	dev->weight = q;
+#define JME_NAPI_HOLDER(holder) struct net_device *holder
+#define JME_NAPI_WEIGHT(w) int *w
+#define JME_NAPI_WEIGHT_VAL(w) *w
+#define JME_NAPI_WEIGHT_SET(w, r) *w = r
+#define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev)
+#define JME_NAPI_ENABLE(priv) netif_poll_enable(priv->dev);
+#define JME_NAPI_DISABLE(priv) netif_poll_disable(priv->dev);
+#define JME_RX_SCHEDULE_PREP(priv) \
+	netif_rx_schedule_prep(priv->dev)
+#define JME_RX_SCHEDULE(priv) \
+	__netif_rx_schedule(priv->dev);
+#else
+#define DECLARE_NAPI_STRUCT struct napi_struct napi;
+#define NETIF_NAPI_SET(dev, napis, pollfn, q) \
+	netif_napi_add(dev, napis, pollfn, q);
+#define JME_NAPI_HOLDER(holder) struct napi_struct *holder
+#define JME_NAPI_WEIGHT(w) int w
+#define JME_NAPI_WEIGHT_VAL(w) w
+#define JME_NAPI_WEIGHT_SET(w, r)
+#define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev, napis)
+#define JME_NAPI_ENABLE(priv) napi_enable(&priv->napi);
+#define JME_NAPI_DISABLE(priv) \
+	if(!napi_disable_pending(&priv->napi)) \
+		napi_disable(&priv->napi);
+#define JME_RX_SCHEDULE_PREP(priv) \
+	netif_rx_schedule_prep(priv->dev, &priv->napi)
+#define JME_RX_SCHEDULE(priv) \
+	__netif_rx_schedule(priv->dev, &priv->napi);
 #endif
 
 /*
@@ -382,6 +417,8 @@ struct jme_adapter {
 	__u32			rx_ring_size;
 	__u32			rx_ring_mask;
 	__u8			mrrs;
+	__u32			fpgaver;
+	__u32			chipver;
 	struct ethtool_cmd	old_ecmd;
 	unsigned int		old_mtu;
 	struct vlan_group*	vlgrp;
@@ -391,7 +428,11 @@ struct jme_adapter {
 	atomic_t		tx_cleaning;
 	atomic_t		rx_cleaning;
 	atomic_t		rx_empty;
-	struct napi_struct	napi;
+	int			(*jme_rx)(struct sk_buff *skb);
+	int			(*jme_vlan_rx)(struct sk_buff *skb,
+					  struct vlan_group *grp,
+					  unsigned short vlan_tag);
+	DECLARE_NAPI_STRUCT
 	DECLARE_NET_DEVICE_STATS
 };
 enum shadow_reg_val {
@@ -407,6 +448,23 @@ enum jme_flags_bits {
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+__always_inline static struct jme_adapter*
+jme_napi_priv(struct net_device *holder)
+{
+	struct jme_adapter* jme;
+	jme = netdev_priv(holder);
+	return jme;
+}
+#else
+__always_inline static struct jme_adapter*
+jme_napi_priv(struct napi_struct *napi)
+{
+	struct jme_adapter* jme;
+	jme = container_of(napi, struct jme_adapter, napi);
+	return jme;
+}
+#endif
 
 /*
  * MMaped I/O Resters
@@ -467,6 +525,7 @@ enum jme_iomap_regs {
 	JME_IENC	= JME_MISC| 0x2C, /* Interrupt Enable - Clear Port */
 	JME_PCCRX0	= JME_MISC| 0x30, /* PCC Control for RX Queue 0 */
 	JME_PCCTX	= JME_MISC| 0x40, /* PCC Control for TX Queues */
+	JME_CHIPMODE	= JME_MISC| 0x44, /* Identify FPGA Version */
 	JME_SHBA_HI	= JME_MISC| 0x48, /* Shadow Register Base HI */
 	JME_SHBA_LO	= JME_MISC| 0x4C, /* Shadow Register Base LO */
 	JME_PCCSRX0	= JME_MISC| 0x80, /* PCC Status of RX0 */
@@ -713,7 +772,7 @@ __always_inline __u32 smi_phy_addr(int x)
 {
         return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
 }
-#define JME_PHY_TIMEOUT 1000 /* 1000 usec */
+#define JME_PHY_TIMEOUT 1000 /* 1000 msec */
 
 /*
  * Global Host Control
@@ -803,6 +862,7 @@ enum jme_gpreg0_masks {
 	GPREG0_DISSH		= 0xFF000000,
 	GPREG0_PCIRLMT		= 0x00300000,
 	GPREG0_PCCNOMUTCLR	= 0x00040000,
+	GPREG0_LNKINTPOLL	= 0x00001000,
 	GPREG0_PCCTMR		= 0x00000300,
 	GPREG0_PHYADDR		= 0x0000001F,
 };
@@ -876,11 +936,11 @@ enum jme_interrupt_bits
 static const __u32 INTR_ENABLE = INTR_SWINTR |
 				 INTR_TMINTR |
 				 INTR_LINKCH |
-				 INTR_RX0EMP |
 				 INTR_PCCRX0TO |
 				 INTR_PCCRX0 |
 				 INTR_PCCTXTO |
-				 INTR_PCCTX;
+				 INTR_PCCTX |
+				 INTR_RX0EMP;
 
 /*
  * PCC Control Registers
@@ -913,6 +973,18 @@ enum jme_pcctx_bits {
 	PCCTXQ7_EN	= 0x00000080,
 };
 
+/*
+ * Chip Mode Register
+ */
+enum jme_chipmode_bit_masks {
+	CM_FPGAVER_MASK		= 0xFFFF0000,
+	CM_CHIPVER_MASK		= 0x0000FF00,
+	CM_CHIPMODE_MASK	= 0x0000000F,
+};
+enum jme_chipmode_shifts {
+	CM_FPGAVER_SHIFT	= 16,
+	CM_CHIPVER_SHIFT	= 8,
+};
 
 /*
  * Shadow base address register bits
@@ -942,6 +1014,23 @@ __always_inline void jwrite32f(struct jme_adapter *jme, __u32 reg, __u32 val)
 }
 
 /*
+ * PHY Regs
+ */
+enum jme_phy_reg17_bit_masks {
+	PREG17_SPEED		= 0xC000,
+	PREG17_DUPLEX		= 0x2000,
+	PREG17_SPDRSV		= 0x0800,
+	PREG17_LNKUP		= 0x0400,
+	PREG17_MDI		= 0x0040,
+};
+enum jme_phy_reg17_vals {
+	PREG17_SPEED_10M	= 0x0000,
+	PREG17_SPEED_100M	= 0x4000,
+	PREG17_SPEED_1000M	= 0x8000,
+};
+#define BMCR_ANCOMP               0x0020
+
+/*
  * Function prototypes for ethtool
  */
 static void jme_get_drvinfo(struct net_device *netdev,
@@ -961,5 +1050,4 @@ static int jme_close(struct net_device *netdev);
 static int jme_start_xmit(struct sk_buff *skb, struct net_device *netdev);
 static int jme_set_macaddr(struct net_device *netdev, void *p);
 static void jme_set_multi(struct net_device *netdev);
-
 

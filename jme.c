@@ -23,8 +23,6 @@
 
 /*
  * TODO:
- * 	-  Implement MSI-X.
- * 	   Along with multiple RX queue, for CPU load balancing.
  *	-  Decode register dump for ethtool.
  */
 
@@ -67,15 +65,15 @@ jme_mdio_read(struct net_device *netdev, int phy, int reg)
 				smi_reg_addr(reg));
 
 	wmb();
-        for (i = JME_PHY_TIMEOUT ; i > 0 ; --i) {
-		udelay(1);
+        for (i = JME_PHY_TIMEOUT * 50 ; i > 0 ; --i) {
+		udelay(20);
 		val = jread32(jme, JME_SMI);
 		if ((val & SMI_OP_REQ) == 0)
 			break;
         }
 
         if (i == 0) {
-		jeprintk(netdev->name, "phy read timeout : %d\n", reg);
+		jeprintk("jme", "phy(%d) read timeout : %d\n", phy, reg);
 		return 0;
         }
 
@@ -94,15 +92,15 @@ jme_mdio_write(struct net_device *netdev,
 		smi_phy_addr(phy) | smi_reg_addr(reg));
 
 	wmb();
-	for (i = JME_PHY_TIMEOUT ; i > 0 ; --i) {
-		udelay(1);
+	for (i = JME_PHY_TIMEOUT * 50 ; i > 0 ; --i) {
+		udelay(20);
 		val = jread32(jme, JME_SMI);
 		if ((val & SMI_OP_REQ) == 0)
 			break;
 	}
 
 	if (i == 0)
-		jeprintk(netdev->name, "phy write timeout : %d\n", reg);
+		jeprintk("jme", "phy(%d) write timeout : %d\n", phy, reg);
 
 	return;
 }
@@ -165,6 +163,7 @@ jme_reset_mac_processor(struct jme_adapter *jme)
 {
 	__u32 mask[WAKEUP_FRAME_MASK_DWNR] = {0,0,0,0};
 	__u32 crc = 0xCDCDCDCD;
+	__u32 gpreg0;
 	int i;
 
 	jwrite32(jme, JME_GHC, jme->reg_ghc | GHC_SWRST);
@@ -174,7 +173,11 @@ jme_reset_mac_processor(struct jme_adapter *jme)
 	jwrite32(jme, JME_RXMCHT_HI, 0x00000000);
 	for(i = 0 ; i < WAKEUP_FRAME_NR ; ++i)
 		jme_setup_wakeup_frame(jme, mask, crc, i);
-	jwrite32(jme, JME_GPREG0, GPREG0_DEFAULT);
+	if(jme->fpgaver)
+		gpreg0 = GPREG0_DEFAULT | GPREG0_LNKINTPOLL;
+	else
+		gpreg0 = GPREG0_DEFAULT;
+	jwrite32(jme, JME_GPREG0, gpreg0);
 	jwrite32(jme, JME_GPREG1, 0);
 }
 
@@ -319,6 +322,19 @@ jme_disable_shadow(struct jme_adapter *jme)
 	jwrite32(jme, JME_SHBA_LO, 0x0);
 }
 
+static __u32
+jme_linkstat_from_phy(struct jme_adapter *jme)
+{
+	__u32 phylink, bmsr;
+
+	phylink = jme_mdio_read(jme->dev, jme->mii_if.phy_id, 17);
+	bmsr = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_BMSR);
+	if(bmsr & BMCR_ANCOMP)
+		phylink |= PHY_LINK_AUTONEG_COMPLETE;
+
+	return phylink;
+}
+
 static int
 jme_check_link(struct net_device *netdev, int testonly)
 {
@@ -328,7 +344,11 @@ jme_check_link(struct net_device *netdev, int testonly)
 	int rc = 0;
 
 	linkmsg[0] = '\0';
-	phylink = jread32(jme, JME_PHY_LINK);
+
+	if(jme->fpgaver)
+		phylink = jme_linkstat_from_phy(jme);
+	else
+		phylink = jread32(jme, JME_PHY_LINK);
 
         if (phylink & PHY_LINK_UP) {
 		if(!(phylink & PHY_LINK_AUTONEG_COMPLETE)) {
@@ -363,8 +383,11 @@ jme_check_link(struct net_device *netdev, int testonly)
 				--cnt) {
 
 				udelay(1);
-				phylink = jread32(jme, JME_PHY_LINK);
 
+				if(jme->fpgaver)
+					phylink = jme_linkstat_from_phy(jme);
+				else
+					phylink = jread32(jme, JME_PHY_LINK);
 			}
 
 			if(!cnt)
@@ -383,21 +406,24 @@ jme_check_link(struct net_device *netdev, int testonly)
 
 		jme->phylink = phylink;
 
+		ghc = jme->reg_ghc & ~(GHC_SPEED_10M |
+					GHC_SPEED_100M |
+					GHC_SPEED_1000M |
+					GHC_DPX);
 		switch(phylink & PHY_LINK_SPEED_MASK) {
 			case PHY_LINK_SPEED_10M:
-				ghc = GHC_SPEED_10M;
+				ghc |= GHC_SPEED_10M;
 				strcat(linkmsg, "10 Mbps, ");
 				break;
 			case PHY_LINK_SPEED_100M:
-				ghc = GHC_SPEED_100M;
+				ghc |= GHC_SPEED_100M;
 				strcat(linkmsg, "100 Mbps, ");
 				break;
 			case PHY_LINK_SPEED_1000M:
-				ghc = GHC_SPEED_1000M;
+				ghc |= GHC_SPEED_1000M;
 				strcat(linkmsg, "1000 Mbps, ");
 				break;
 			default:
-				ghc = 0;
 				break;
 		}
                 ghc |= (phylink & PHY_LINK_DUPLEX) ? GHC_DPX : 0;
@@ -467,7 +493,7 @@ jme_setup_tx_resources(struct jme_adapter *jme)
 						RING_DESC_ALIGN);
 	txring->dma		= ALIGN(txring->dmaalloc, RING_DESC_ALIGN);
 	txring->next_to_use	= 0;
-	txring->next_to_clean	= 0;
+	atomic_set(&txring->next_to_clean, 0);
 	atomic_set(&txring->nr_free, jme->tx_ring_size);
 
 	/*
@@ -510,7 +536,7 @@ jme_free_tx_resources(struct jme_adapter *jme)
 		txring->dma		= 0;
 	}
 	txring->next_to_use	= 0;
-	txring->next_to_clean	= 0;
+	atomic_set(&txring->next_to_clean, 0);
 	atomic_set(&txring->nr_free, 0);
 
 }
@@ -671,7 +697,7 @@ jme_free_rx_resources(struct jme_adapter *jme)
 		rxring->dma      = 0;
 	}
 	rxring->next_to_use   = 0;
-	rxring->next_to_clean = 0;
+	atomic_set(&rxring->next_to_clean, 0);
 }
 
 static int
@@ -698,7 +724,7 @@ jme_setup_rx_resources(struct jme_adapter *jme)
 						RING_DESC_ALIGN);
 	rxring->dma		= ALIGN(rxring->dmaalloc, RING_DESC_ALIGN);
 	rxring->next_to_use	= 0;
-	rxring->next_to_clean	= 0;
+	atomic_set(&rxring->next_to_clean, 0);
 
 	/*
 	 * Initiallize Receive Descriptors
@@ -790,22 +816,30 @@ jme_rxsum_ok(struct jme_adapter *jme, __u16 flags)
 	if(unlikely((flags & RXWBFLAG_TCPON) &&
 	!(flags & RXWBFLAG_TCPCS))) {
 		csum_dbg(jme->dev->name, "TCP Checksum error.\n");
-		return false;
+		goto out_sumerr;
 	}
 
 	if(unlikely((flags & RXWBFLAG_UDPON) &&
 	!(flags & RXWBFLAG_UDPCS))) {
 		csum_dbg(jme->dev->name, "UDP Checksum error.\n");
-		return false;
+		goto out_sumerr;
 	}
 
 	if(unlikely((flags & RXWBFLAG_IPV4) &&
 	!(flags & RXWBFLAG_IPCS))) {
 		csum_dbg(jme->dev->name, "IPv4 Checksum error.\n");
-		return false;
+		goto out_sumerr;
 	}
 
 	return true;
+
+out_sumerr:
+	csum_dbg(jme->dev->name, "%s%s%s%s\n",
+		(flags & RXWBFLAG_IPV4)?"IPv4 ":"",
+		(flags & RXWBFLAG_IPV6)?"IPv6 ":"",
+		(flags & RXWBFLAG_UDPON)?"UDP ":"",
+		(flags & RXWBFLAG_TCPON)?"TCP":"");
+	return false;
 }
 
 static void
@@ -854,13 +888,13 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 			if(jme->vlgrp) {
 				vlan_dbg(jme->dev->name,
 					"VLAN Passed to kernel.\n");
-				vlan_hwaccel_rx(skb, jme->vlgrp,
+				jme->jme_vlan_rx(skb, jme->vlgrp,
 					le32_to_cpu(rxdesc->descwb.vlan));
 				NET_STAT(jme).rx_bytes += 4;
 			}
 		}
 		else {
-			netif_rx(skb);
+			jme->jme_rx(skb);
 		}
 
 		if((le16_to_cpu(rxdesc->descwb.flags) & RXWBFLAG_DEST) ==
@@ -894,7 +928,7 @@ jme_process_receive(struct jme_adapter *jme, int limit)
 	if(unlikely(!netif_carrier_ok(jme->dev)))
 		goto out_inc;
 
-	i = rxring->next_to_clean;
+	i = atomic_read(&rxring->next_to_clean);
 	while( limit-- > 0 )
 	{
 		rxdesc = rxring->desc;
@@ -946,7 +980,7 @@ out:
 		(jread32(jme, JME_RXNDA) - jread32(jme, JME_RXDBA_LO))
 			>> 4);
 
-	rxring->next_to_clean = i;
+	atomic_set(&rxring->next_to_clean, i);
 
 out_inc:
 	atomic_inc(&jme->rx_cleaning);
@@ -1074,10 +1108,8 @@ jme_link_change_tasklet(unsigned long arg)
 		jme_free_rx_resources(jme);
 		jme_free_tx_resources(jme);
 
-		if(jme->flags & JME_FLAG_POLL) {
+		if(jme->flags & JME_FLAG_POLL)
 			jme_polling_mode(jme);
-			napi_disable(&jme->napi);
-		}
 	}
 
 	jme_check_link(netdev, 0);
@@ -1104,10 +1136,8 @@ jme_link_change_tasklet(unsigned long arg)
 
 		netif_start_queue(netdev);
 
-		if(jme->flags & JME_FLAG_POLL) {
-			napi_enable(&jme->napi);
+		if(jme->flags & JME_FLAG_POLL)
 			jme_interrupt_mode(jme);
-		}
 
 		jme_start_pcc_timer(jme);
 	}
@@ -1132,26 +1162,28 @@ jme_rx_clean_tasklet(unsigned long arg)
 }
 
 static int
-jme_poll(struct napi_struct *napi, int budget)
+jme_poll(JME_NAPI_HOLDER(holder), JME_NAPI_WEIGHT(budget))
 {
-	struct jme_adapter *jme = container_of(napi, struct jme_adapter, napi);
+	struct jme_adapter *jme = jme_napi_priv(holder);
 	struct net_device *netdev = jme->dev;
 	int rest;
 
-	rest = jme_process_receive(jme, budget);
+	rest = jme_process_receive(jme, JME_NAPI_WEIGHT_VAL(budget));
 
-	while(!atomic_dec_and_test(&jme->rx_empty)) {
+	while(atomic_read(&jme->rx_empty) > 0) {
+		atomic_dec(&jme->rx_empty);
 		++(NET_STAT(jme).rx_dropped);
 		jme_restart_rx_engine(jme);
 	}
 	atomic_inc(&jme->rx_empty);
 
 	if(rest) {
-		netif_rx_complete(netdev, napi);
+		JME_RX_COMPLETE(netdev, holder);
 		jme_interrupt_mode(jme);
 	}
 
-	return budget - rest;
+	JME_NAPI_WEIGHT_SET(budget, rest);
+	return JME_NAPI_WEIGHT_VAL(budget) - rest;
 }
 
 static void
@@ -1168,7 +1200,13 @@ jme_rx_empty_tasklet(unsigned long arg)
 	queue_dbg(jme->dev->name, "RX Queue Full!\n");
 
 	jme_rx_clean_tasklet(arg);
-	jme_restart_rx_engine(jme);
+
+	while(atomic_read(&jme->rx_empty) > 0) {
+		atomic_dec(&jme->rx_empty);
+		++(NET_STAT(jme).rx_dropped);
+		jme_restart_rx_engine(jme);
+	}
+	atomic_inc(&jme->rx_empty);
 }
 
 static void
@@ -1210,7 +1248,7 @@ jme_tx_clean_tasklet(unsigned long arg)
 
 	tx_dbg(jme->dev->name, "Tx Tasklet: In\n");
 
-	for(i = txring->next_to_clean ; cnt < max ; ) {
+	for(i = atomic_read(&txring->next_to_clean) ; cnt < max ; ) {
 
 		ctxbi = txbi + i;
 
@@ -1249,6 +1287,7 @@ jme_tx_clean_tasklet(unsigned long arg)
 
 			ctxbi->skb = NULL;
 			ctxbi->len = 0;
+			ctxbi->start_xmit = 0;
 		}
 		else {
 			if(!ctxbi->skb)
@@ -1270,8 +1309,8 @@ jme_tx_clean_tasklet(unsigned long arg)
 	tx_dbg(jme->dev->name,
 		"Tx Tasklet: Stop %d Jiffies %lu\n",
 		i, jiffies);
-	txring->next_to_clean = i;
 
+	atomic_set(&txring->next_to_clean, i);
 	atomic_add(cnt, &txring->nr_free);
 
 	jme_wake_queue_if_stopped(jme);
@@ -1309,16 +1348,17 @@ jme_intr_msi(struct jme_adapter *jme, __u32 intrstat)
 			atomic_inc(&jme->rx_empty);
 
 		if((intrstat & (INTR_PCCRX0TO | INTR_PCCRX0 | INTR_RX0EMP))) {
-			if(likely(
-			netif_rx_schedule_prep(jme->dev, &jme->napi))) {
+			if(likely(JME_RX_SCHEDULE_PREP(jme))) {
 				jme_polling_mode(jme);
-				__netif_rx_schedule(jme->dev, &jme->napi);
+				JME_RX_SCHEDULE(jme);
 			}
 		}
 	}
 	else {
-		if(intrstat & INTR_RX0EMP)
+		if(intrstat & INTR_RX0EMP) {
+			atomic_inc(&jme->rx_empty);
 			tasklet_schedule(&jme->rxempty_task);
+		}
 
 		if(intrstat & (INTR_PCCRX0TO | INTR_PCCRX0))
 			tasklet_schedule(&jme->rxclean_task);
@@ -1446,7 +1486,7 @@ static int
 jme_open(struct net_device *netdev)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
-	int rc, timeout = 100;
+	int rc, timeout = 10;
 
 	while(
 		--timeout > 0 &&
@@ -1456,7 +1496,7 @@ jme_open(struct net_device *netdev)
 		atomic_read(&jme->tx_cleaning) != 1
 		)
 	)
-		msleep(10);
+		msleep(1);
 
 	if(!timeout) {
 		rc = -EBUSY;
@@ -1465,6 +1505,7 @@ jme_open(struct net_device *netdev)
 
 	jme_clear_pm(jme);
 	jme_reset_mac_processor(jme);
+	JME_NAPI_ENABLE(jme);
 
 	rc = jme_request_irq(jme);
 	if(rc)
@@ -1501,7 +1542,10 @@ jme_set_100m_half(struct jme_adapter *jme)
 	if (bmcr != tmp)
 		jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_BMCR, tmp);
 
-	jwrite32(jme, JME_GHC, GHC_SPEED_100M);
+	if(jme->fpgaver)
+		jwrite32(jme, JME_GHC, GHC_SPEED_100M | GHC_LINK_POLL);
+	else
+		jwrite32(jme, JME_GHC, GHC_SPEED_100M);
 }
 
 static void
@@ -1523,8 +1567,7 @@ jme_close(struct net_device *netdev)
 	jme_disable_shadow(jme);
 	jme_free_irq(jme);
 
-	if(jme->flags & JME_FLAG_POLL)
-		napi_disable(&jme->napi);
+	JME_NAPI_DISABLE(jme);
 
 	tasklet_kill(&jme->linkch_task);
 	tasklet_kill(&jme->txclean_task);
@@ -1748,6 +1791,8 @@ jme_fill_first_tx_desc(struct jme_adapter *jme, struct sk_buff *skb, int idx)
 	txbi->nr_desc = skb_shinfo(skb)->nr_frags + 2;
 	txbi->skb = skb;
 	txbi->len = skb->len;
+	if(!(txbi->start_xmit = jiffies))
+		txbi->start_xmit = 1;
 
 	return 0;
 }
@@ -1756,6 +1801,9 @@ static void
 jme_stop_queue_if_full(struct jme_adapter *jme)
 {
 	struct jme_ring *txring = jme->txring;
+        struct jme_buffer_info *txbi = txring->bufinf;
+
+	txbi += atomic_read(&txring->next_to_clean);
 
 	smp_wmb();
 	if(unlikely(atomic_read(&txring->nr_free) < (MAX_SKB_FRAGS+2))) {
@@ -1768,6 +1816,11 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
 		}
 	}
 
+	if(unlikely(	txbi->start_xmit &&
+			(jiffies - txbi->start_xmit) >= TX_TIMEOUT &&
+			txbi->skb)) {
+		netif_stop_queue(jme->dev);
+	}
 }
 
 /*
@@ -1932,11 +1985,14 @@ jme_tx_timeout(struct net_device *netdev)
 {
         struct jme_adapter *jme = netdev_priv(netdev);
 
-	/*
-	 * Reset the link
-	 * And the link change will reinitialize all RX/TX resources
-	 */
 	jme->phylink = 0;
+	jme_reset_phy_processor(jme);
+	if(jme->flags & JME_FLAG_SSET)
+		jme_set_settings(netdev, &jme->old_ecmd);
+
+	/*
+	 * Force to Reset the link again
+	 */
 	jme_reset_link(jme);
 }
 
@@ -2002,13 +2058,17 @@ jme_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
 
-	if(jme->flags & JME_FLAG_POLL)
-		ecmd->use_adaptive_rx_coalesce = false;
-	else
-		ecmd->use_adaptive_rx_coalesce = true;
-
 	ecmd->tx_coalesce_usecs = PCC_TX_TO;
 	ecmd->tx_max_coalesced_frames = PCC_TX_CNT;
+
+	if(jme->flags & JME_FLAG_POLL) {
+		ecmd->use_adaptive_rx_coalesce = false;
+		ecmd->rx_coalesce_usecs = 0;
+		ecmd->rx_max_coalesced_frames = 0;
+		return 0;
+	}
+
+	ecmd->use_adaptive_rx_coalesce = true;
 
 	switch(jme->dpi.cur) {
 	case PCC_P1:
@@ -2036,10 +2096,14 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 	struct jme_adapter *jme = netdev_priv(netdev);
 	struct dynpcc_info *dpi = &(jme->dpi);
 
+	if(netif_running(netdev))
+		return -EBUSY;
+
 	if(ecmd->use_adaptive_rx_coalesce
 	&& (jme->flags & JME_FLAG_POLL)) {
 		jme->flags &= ~JME_FLAG_POLL;
-		napi_disable(&jme->napi);
+		jme->jme_rx = netif_rx;
+		jme->jme_vlan_rx = vlan_hwaccel_rx;
 		dpi->cur		= PCC_P1;
 		dpi->attempt		= PCC_P1;
 		dpi->cnt		= 0;
@@ -2049,7 +2113,8 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 	else if(!(ecmd->use_adaptive_rx_coalesce)
 	&& !(jme->flags & JME_FLAG_POLL)) {
 		jme->flags |= JME_FLAG_POLL;
-		napi_enable(&jme->napi);
+		jme->jme_rx = netif_receive_skb;
+		jme->jme_vlan_rx = vlan_hwaccel_receive_skb;
 		jme_interrupt_mode(jme);
 	}
 
@@ -2335,18 +2400,39 @@ jme_pci_dma64(struct pci_dev *pdev)
 }
 
 __always_inline static void
-jme_set_phy_ps(struct jme_adapter *jme)
+jme_phy_init(struct jme_adapter *jme)
 {
-	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 26, 0x00001000);
+	__u16 reg26;
+
+	reg26 = jme_mdio_read(jme->dev, jme->mii_if.phy_id, 26);
+	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 26, reg26 | 0x1000);
+}
+
+__always_inline static void
+jme_set_gmii(struct jme_adapter *jme)
+{
+	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 27, 0x0004);
+}
+
+static void
+jme_check_hw_ver(struct jme_adapter *jme)
+{
+	__u32 chipmode;
+
+	chipmode = jread32(jme, JME_CHIPMODE);
+
+	jme->fpgaver = (chipmode & CM_FPGAVER_MASK) >> CM_FPGAVER_SHIFT;
+	jme->chipver = (chipmode & CM_CHIPVER_MASK) >> CM_CHIPVER_SHIFT;
 }
 
 static int __devinit
 jme_init_one(struct pci_dev *pdev,
 	     const struct pci_device_id *ent)
 {
-	int rc = 0, using_dac;
+	int rc = 0, using_dac, i;
 	struct net_device *netdev;
 	struct jme_adapter *jme;
+	__u16 bmcr, bmsr;
 
 	/*
 	 * set up PCI device basics
@@ -2416,6 +2502,8 @@ jme_init_one(struct pci_dev *pdev,
 	jme = netdev_priv(netdev);
 	jme->pdev = pdev;
 	jme->dev = netdev;
+	jme->jme_rx = netif_rx;
+	jme->jme_vlan_rx = vlan_hwaccel_rx;
 	jme->old_mtu = netdev->mtu = 1500;
 	jme->phylink = 0;
 	jme->tx_ring_size = 1 << 10;
@@ -2439,7 +2527,7 @@ jme_init_one(struct pci_dev *pdev,
 		goto err_out_unmap;
 	}
 
-	netif_napi_add(netdev, &jme->napi, jme_poll, jme->rx_ring_size >> 2);
+	NETIF_NAPI_SET(netdev, &jme->napi, jme_poll, jme->rx_ring_size >> 2)
 
 	spin_lock_init(&jme->phy_lock);
 	spin_lock_init(&jme->macaddr_lock);
@@ -2465,12 +2553,6 @@ jme_init_one(struct pci_dev *pdev,
 	tasklet_init(&jme->rxempty_task,
 		     &jme_rx_empty_tasklet,
 		     (unsigned long) jme);
-	jme->mii_if.dev = netdev;
-	jme->mii_if.phy_id = 1;
-	jme->mii_if.supports_gmii = 1;
-	jme->mii_if.mdio_read = jme_mdio_read;
-	jme->mii_if.mdio_write = jme_mdio_write;
-
 	jme->dpi.cur = PCC_P1;
 
 	jme->reg_ghc = GHC_DPX | GHC_SPEED_1000M;
@@ -2478,7 +2560,7 @@ jme_init_one(struct pci_dev *pdev,
 	jme->reg_rxmcs = RXMCS_DEFAULT;
 	jme->reg_txpfc = 0;
 	jme->reg_pmcs = PMCS_LFEN | PMCS_LREN | PMCS_MFEN;
-	jme->flags = JME_FLAG_TXCSUM | JME_FLAG_TSO | JME_FLAG_POLL;
+	jme->flags = JME_FLAG_TXCSUM | JME_FLAG_TSO;
 
 	/*
 	 * Get Max Read Req Size from PCI Config Space
@@ -2498,11 +2580,46 @@ jme_init_one(struct pci_dev *pdev,
 
 
 	/*
+	 * Must check before reset_mac_processor
+	 */
+	jme_check_hw_ver(jme);
+	jme->mii_if.dev = netdev;
+	if(jme->fpgaver) {
+		jme->mii_if.phy_id = 0;
+		for(i = 1 ; i < 32 ; ++i) {
+			bmcr = jme_mdio_read(netdev, i, MII_BMCR);
+			bmsr = jme_mdio_read(netdev, i, MII_BMSR);
+			if(bmcr != 0xFFFFU && (bmcr != 0 || bmsr != 0)) {
+				jme->mii_if.phy_id = i;
+				break;
+			}
+		}
+
+		if(!jme->mii_if.phy_id) {
+			rc = -EIO;
+			printk(KERN_ERR PFX "Can not find phy_id.\n");
+			 goto err_out_free_shadow;
+		}
+
+		jme->reg_ghc |= GHC_LINK_POLL;
+	}
+	else {
+		jme->mii_if.phy_id = 1;
+	}
+	jme->mii_if.supports_gmii = 1;
+	jme->mii_if.mdio_read = jme_mdio_read;
+	jme->mii_if.mdio_write = jme_mdio_write;
+
+	jme_clear_pm(jme);
+	if(jme->fpgaver)
+		jme_set_gmii(jme);
+	else
+		jme_phy_init(jme);
+	jme_phy_off(jme);
+
+	/*
 	 * Reset MAC processor and reload EEPROM for MAC Address
 	 */
-	jme_clear_pm(jme);
-	jme_set_phy_ps(jme);
-	jme_phy_off(jme);
 	jme_reset_mac_processor(jme);
 	rc = jme_reload_eeprom(jme);
 	if(rc) {
@@ -2529,7 +2646,9 @@ jme_init_one(struct pci_dev *pdev,
 	}
 
 	jprintk(netdev->name,
-		"JMC250 gigabit eth %02x:%02x:%02x:%02x:%02x:%02x\n",
+		"JMC250 gigabit%s ver:%u eth %02x:%02x:%02x:%02x:%02x:%02x\n",
+		(jme->fpgaver != 0)?" (FPGA)":"",
+		(jme->fpgaver != 0)?jme->fpgaver:jme->chipver,
 	        netdev->dev_addr[0],
 	        netdev->dev_addr[1],
 	        netdev->dev_addr[2],
@@ -2611,10 +2730,8 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 		netif_carrier_off(netdev);
 		jme->phylink = 0;
 
-		if(jme->flags & JME_FLAG_POLL) {
+		if(jme->flags & JME_FLAG_POLL)
 			jme_polling_mode(jme);
-			napi_disable(&jme->napi);
-		}
 	}
 
 
