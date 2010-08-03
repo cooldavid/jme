@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.3"
+#define DRV_VERSION	"0.4"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -307,28 +307,29 @@ struct jme_adapter {
 	struct mii_if_info	mii_if;
 	struct jme_ring		rxring[RX_RING_NR];
 	struct jme_ring		txring[TX_RING_NR];
-	spinlock_t		rx_lock;
 	spinlock_t		tx_lock;
 	spinlock_t		phy_lock;
+	spinlock_t		macaddr_lock;
+	struct tasklet_struct	rxempty_task;
 	struct tasklet_struct	rxclean_task;
 	struct tasklet_struct	txclean_task;
 	struct tasklet_struct	linkch_task;
-	__u32			flags;
 	__u32			reg_txcs;
 	__u32			reg_rxmcs;
 	__u32			reg_ghc;
+	__u32			phylink;
+	__u8			mrrs;
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
+	atomic_t		link_changing;
+	atomic_t		tx_cleaning;
+	atomic_t		rx_cleaning;
 	DECLARE_NET_DEVICE_STATS
 };
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
 };
-
-#define JME_FLAG_RXQ0_EMPTY    0x00000001
-#define JME_FLAG_RXQ1_EMPTY    0x00000002
-#define JME_FLAG_RXQ2_EMPTY    0x00000004
-#define JME_FLAG_RXQ3_EMPTY    0x00000008
+#define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 
 /*
  * MMaped I/O Resters
@@ -426,7 +427,7 @@ enum jme_txcs_value {
 	TXCS_DEFAULT		= TXCS_FIFOTH_4QW |
 				  TXCS_BURST,
 };
-#define JME_TX_DISABLE_TIMEOUT 200 /* 200 usec */
+#define JME_TX_DISABLE_TIMEOUT 100 /* 100 msec */
 
 /*
  * TX MAC Control/Status Bits
@@ -542,7 +543,7 @@ enum jme_rxcs_values {
 				  RXCS_RETRYGAP_256ns |
 				  RXCS_RETRYCNT_32,
 };
-#define JME_RX_DISABLE_TIMEOUT 200 /* 200 usec */
+#define JME_RX_DISABLE_TIMEOUT 100 /* 100 msec */
 
 /*
  * RX MAC Control/Status Bits
@@ -592,7 +593,6 @@ __always_inline __u32 smi_phy_addr(int x)
         return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
 }
 #define JME_PHY_TIMEOUT 1000 /* 1000 usec */
-#define JME_PHY_RST_TIMEOUT 100 /* 100 usec */
 
 /*
  * Global Host Control
@@ -618,13 +618,14 @@ enum jme_phy_link_bit_mask {
 	PHY_LINK_SPEEDDPU_RESOLVED	= 0x00000800,
 	PHY_LINK_UP			= 0x00000400,
 	PHY_LINK_AUTONEG_COMPLETE	= 0x00000200,
+	PHY_LINK_MDI_STAT		= 0x00000040,
 };
 enum jme_phy_link_speed_val {
 	PHY_LINK_SPEED_10M		= 0x00000000,
 	PHY_LINK_SPEED_100M		= 0x00004000,
 	PHY_LINK_SPEED_1000M		= 0x00008000,
 };
-#define JME_AUTONEG_TIMEOUT	500	/* 500 ms */
+#define JME_SPDRSV_TIMEOUT	500	/* 500 us */
 
 /*
  * SMB Control and Status
@@ -801,4 +802,5 @@ static int jme_close(struct net_device *netdev);
 static int jme_start_xmit(struct sk_buff *skb, struct net_device *netdev);
 static int jme_set_macaddr(struct net_device *netdev, void *p);
 static void jme_set_multi(struct net_device *netdev);
+
 
