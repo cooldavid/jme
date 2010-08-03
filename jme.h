@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9b"
+#define DRV_VERSION	"0.9c"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -447,6 +447,7 @@ enum jme_flags_bits {
 };
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
+#define JME_REG_LEN		0x500
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
 __always_inline static struct jme_adapter*
@@ -514,6 +515,7 @@ enum jme_iomap_regs {
 	JME_PHY_CS	= JME_PHY | 0x28, /* PHY Ctrl and Status Register */
 	JME_PHY_LINK	= JME_PHY | 0x30, /* PHY Link Status Register */
 	JME_SMBCSR	= JME_PHY | 0x40, /* SMB Control and Status */
+	JME_SMBINTF	= JME_PHY | 0x44, /* SMB Interface */
 
 
 	JME_TMCSR	= JME_MISC| 0x00, /* Timer Control/Status Register */
@@ -773,6 +775,7 @@ __always_inline __u32 smi_phy_addr(int x)
         return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
 }
 #define JME_PHY_TIMEOUT 1000 /* 1000 msec */
+#define JME_PHY_REG_NR 32
 
 /*
  * Global Host Control
@@ -842,8 +845,33 @@ enum jme_smbcsr_bit_mask {
 	SMBCSR_CNACK	= 0x00020000,
 	SMBCSR_RELOAD	= 0x00010000,
 	SMBCSR_EEPROMD	= 0x00000020,
+	SMBCSR_INITDONE	= 0x00000010,
+	SMBCSR_BUSY	= 0x0000000F,
 };
-#define JME_SMB_TIMEOUT 10 /* 10 msec */
+enum jme_smbintf_bit_mask {
+	SMBINTF_HWDATR	= 0xFF000000,
+	SMBINTF_HWDATW	= 0x00FF0000,
+	SMBINTF_HWADDR	= 0x0000FF00,
+	SMBINTF_HWRWN	= 0x00000020,
+	SMBINTF_HWCMD	= 0x00000010,
+	SMBINTF_FASTM	= 0x00000008,
+	SMBINTF_GPIOSCL	= 0x00000004,
+	SMBINTF_GPIOSDA	= 0x00000002,
+	SMBINTF_GPIOEN	= 0x00000001,
+};
+enum jme_smbintf_vals {
+	SMBINTF_HWRWN_READ	= 0x00000020,
+	SMBINTF_HWRWN_WRITE	= 0x00000000,
+};
+enum jme_smbintf_shifts {
+	SMBINTF_HWDATR_SHIFT	= 24,
+	SMBINTF_HWDATW_SHIFT	= 16,
+	SMBINTF_HWADDR_SHIFT	= 8,
+};
+#define JME_EEPROM_RELOAD_TIMEOUT 2000 /* 2000 msec */
+#define JME_SMB_BUSY_TIMEOUT 20 /* 20 msec */
+#define JME_SMB_LEN 256
+#define JME_EEPROM_MAGIC 0x250
 
 /*
  * Timer Control/Status Register

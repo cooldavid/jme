@@ -58,8 +58,9 @@ static int
 jme_mdio_read(struct net_device *netdev, int phy, int reg)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
-	int i, val;
+	int i, val, again = (reg == MII_BMSR)?1:0;
 
+read_again:
         jwrite32(jme, JME_SMI, SMI_OP_REQ |
 				smi_phy_addr(phy) |
 				smi_reg_addr(reg));
@@ -76,6 +77,9 @@ jme_mdio_read(struct net_device *netdev, int phy, int reg)
 		jeprintk("jme", "phy(%d) read timeout : %d\n", phy, reg);
 		return 0;
         }
+
+	if(again--)
+		goto read_again;
 
 	return ((val & SMI_DATA_MASK) >> SMI_DATA_SHIFT);
 }
@@ -205,7 +209,7 @@ jme_reload_eeprom(struct jme_adapter *jme)
 		jwrite32(jme, JME_SMBCSR, val);
 		mdelay(12);
 
-		for (i = JME_SMB_TIMEOUT; i > 0; --i)
+		for (i = JME_EEPROM_RELOAD_TIMEOUT; i > 0; --i)
 		{
 			mdelay(1);
 			if ((jread32(jme, JME_SMBCSR) & SMBCSR_RELOAD) == 0)
@@ -213,12 +217,10 @@ jme_reload_eeprom(struct jme_adapter *jme)
 		}
 
 		if(i == 0) {
-			jeprintk(jme->dev->name, "eeprom reload timeout\n");
+			jeprintk("jme", "eeprom reload timeout\n");
 			return -EIO;
 		}
 	}
-	else
-		return -EIO;
 
 	return 0;
 }
@@ -1885,13 +1887,13 @@ jme_set_macaddr(struct net_device *netdev, void *p)
 	spin_lock(&jme->macaddr_lock);
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
 
-	val = addr->sa_data[3] << 24 |
-	      addr->sa_data[2] << 16 |
-	      addr->sa_data[1] <<  8 |
-	      addr->sa_data[0];
+	val = (addr->sa_data[3] & 0xff) << 24 |
+	      (addr->sa_data[2] & 0xff) << 16 |
+	      (addr->sa_data[1] & 0xff) <<  8 |
+	      (addr->sa_data[0] & 0xff);
 	jwrite32(jme, JME_RXUMA_LO, val);
-	val = addr->sa_data[5] << 8 |
-	      addr->sa_data[4];
+	val = (addr->sa_data[5] & 0xff) << 8 |
+	      (addr->sa_data[4] & 0xff);
 	jwrite32(jme, JME_RXUMA_HI, val);
 	spin_unlock(&jme->macaddr_lock);
 
@@ -2018,7 +2020,7 @@ jme_get_drvinfo(struct net_device *netdev,
 static int
 jme_get_regs_len(struct net_device *netdev)
 {
-	return 0x400;
+	return JME_REG_LEN; 
 }
 
 static void
@@ -2028,7 +2030,16 @@ mmapio_memcpy(struct jme_adapter *jme, __u32 *p, __u32 reg, int len)
 
 	for(i = 0 ; i < len ; i += 4)
 		p[i >> 2] = jread32(jme, reg + i);
+}
 
+static void
+mdio_memcpy(struct jme_adapter *jme, __u32 *p, int reg_nr)
+{
+	int i;
+	__u16 *p16 = (__u16*)p;
+
+	for(i = 0 ; i < reg_nr ; ++i)
+		p16[i] = jme_mdio_read(jme->dev, jme->mii_if.phy_id, i);
 }
 
 static void
@@ -2037,7 +2048,7 @@ jme_get_regs(struct net_device *netdev, struct ethtool_regs *regs, void *p)
         struct jme_adapter *jme = netdev_priv(netdev);
 	__u32 *p32 = (__u32*)p;
 
-	memset(p, 0, 0x400);
+	memset(p, 0xFF, JME_REG_LEN);
 
 	regs->version = 1;
 	mmapio_memcpy(jme, p32, JME_MAC, JME_MAC_LEN);
@@ -2051,6 +2062,8 @@ jme_get_regs(struct net_device *netdev, struct ethtool_regs *regs, void *p)
 	p32 += 0x100 >> 2;
 	mmapio_memcpy(jme, p32, JME_RSS, JME_RSS_LEN);
 
+	p32 += 0x100 >> 2;
+	mdio_memcpy(jme, p32, JME_PHY_REG_NR);
 }
 
 static int
@@ -2354,6 +2367,124 @@ jme_nway_reset(struct net_device *netdev)
 	return 0;
 }
 
+static __u8
+jme_smb_read(struct jme_adapter *jme, unsigned int addr)
+{
+	__u32 val;
+	int to;
+
+	val = jread32(jme, JME_SMBCSR);
+	to = JME_SMB_BUSY_TIMEOUT;
+	while((val & SMBCSR_BUSY) && --to) {
+		msleep(1);
+		val = jread32(jme, JME_SMBCSR);
+	}
+	if(!to) {
+		jeprintk(jme->dev->name, "SMB Bus Busy.\n");
+		return 0xFF;
+	}
+
+	jwrite32(jme, JME_SMBINTF,
+		((addr << SMBINTF_HWADDR_SHIFT) & SMBINTF_HWADDR) |
+		SMBINTF_HWRWN_READ |
+		SMBINTF_HWCMD);
+
+	val = jread32(jme, JME_SMBINTF);
+	to = JME_SMB_BUSY_TIMEOUT;
+	while((val & SMBINTF_HWCMD) && --to) {
+		msleep(1);
+		val = jread32(jme, JME_SMBINTF);
+	}
+	if(!to) {
+		jeprintk(jme->dev->name, "SMB Bus Busy.\n");
+		return 0xFF;
+	}
+
+	return (val & SMBINTF_HWDATR) >> SMBINTF_HWDATR_SHIFT;
+}
+
+static void
+jme_smb_write(struct jme_adapter *jme, unsigned int addr, __u8 data)
+{
+	__u32 val;
+	int to;
+
+	val = jread32(jme, JME_SMBCSR);
+	to = JME_SMB_BUSY_TIMEOUT;
+	while((val & SMBCSR_BUSY) && --to) {
+		msleep(1);
+		val = jread32(jme, JME_SMBCSR);
+	}
+	if(!to) {
+		jeprintk(jme->dev->name, "SMB Bus Busy.\n");
+		return;
+	}
+
+	jwrite32(jme, JME_SMBINTF,
+		((data << SMBINTF_HWDATW_SHIFT) & SMBINTF_HWDATW) |
+		((addr << SMBINTF_HWADDR_SHIFT) & SMBINTF_HWADDR) |
+		SMBINTF_HWRWN_WRITE |
+		SMBINTF_HWCMD);
+
+	val = jread32(jme, JME_SMBINTF);
+	to = JME_SMB_BUSY_TIMEOUT;
+	while((val & SMBINTF_HWCMD) && --to) {
+		msleep(1);
+		val = jread32(jme, JME_SMBINTF);
+	}
+	if(!to) {
+		jeprintk(jme->dev->name, "SMB Bus Busy.\n");
+		return;
+	}
+
+	mdelay(2);
+}
+
+static int
+jme_get_eeprom_len(struct net_device *netdev)
+{
+        struct jme_adapter *jme = netdev_priv(netdev);
+	__u32 val;
+	val = jread32(jme, JME_SMBCSR);
+	return (val & SMBCSR_EEPROMD)?JME_SMB_LEN:0;
+}
+
+static int
+jme_get_eeprom(struct net_device *netdev,
+		struct ethtool_eeprom *eeprom, u8 *data)
+{
+        struct jme_adapter *jme = netdev_priv(netdev);
+	int i, offset = eeprom->offset, len = eeprom->len;
+
+	/*
+	 * ethtool will check boundary for us
+	 */
+	eeprom->magic = JME_EEPROM_MAGIC;
+	for(i = 0 ; i < len ; ++i)
+		data[i] = jme_smb_read(jme, i + offset);
+
+	return 0;
+}
+
+static int
+jme_set_eeprom(struct net_device *netdev,
+		struct ethtool_eeprom *eeprom, u8 *data)
+{
+        struct jme_adapter *jme = netdev_priv(netdev);
+	int i, offset = eeprom->offset, len = eeprom->len;
+
+	if (eeprom->magic != JME_EEPROM_MAGIC)
+		return -EINVAL;
+
+	/*
+	 * ethtool will check boundary for us
+	 */
+	for(i = 0 ; i < len ; ++i)
+		jme_smb_write(jme, i + offset, data[i]);
+
+	return 0;
+}
+
 static const struct ethtool_ops jme_ethtool_ops = {
         .get_drvinfo            = jme_get_drvinfo,
 	.get_regs_len		= jme_get_regs_len,
@@ -2373,6 +2504,9 @@ static const struct ethtool_ops jme_ethtool_ops = {
 	.set_tso		= jme_set_tso,
 	.set_sg			= ethtool_op_set_sg,
 	.nway_reset             = jme_nway_reset,
+	.get_eeprom_len		= jme_get_eeprom_len,
+	.get_eeprom		= jme_get_eeprom,
+	.set_eeprom		= jme_set_eeprom,
 };
 
 static int
