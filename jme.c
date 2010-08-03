@@ -350,13 +350,13 @@ jme_linkstat_from_phy(struct jme_adapter *jme)
 }
 
 static inline void
-jme_set_gmii(struct jme_adapter *jme)
+jme_set_phyfifoa(struct jme_adapter *jme)
 {
 	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 27, 0x0004);
 }
 
 static inline void
-jme_set_rgmii(struct jme_adapter *jme)
+jme_set_phyfifob(struct jme_adapter *jme)
 {
 	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 27, 0x0000);
 }
@@ -437,20 +437,20 @@ jme_check_link(struct net_device *netdev, int testonly)
 		case PHY_LINK_SPEED_10M:
 			ghc |= GHC_SPEED_10M;
 			strcat(linkmsg, "10 Mbps, ");
-			if (jme->rev == 0x11)
-				jme_set_gmii(jme);
+			if (is_buggy250(jme->pdev->device, jme->chiprev))
+				jme_set_phyfifoa(jme);
 			break;
 		case PHY_LINK_SPEED_100M:
 			ghc |= GHC_SPEED_100M;
 			strcat(linkmsg, "100 Mbps, ");
-			if (jme->rev == 0x11)
-				jme_set_rgmii(jme);
+			if (is_buggy250(jme->pdev->device, jme->chiprev))
+				jme_set_phyfifob(jme);
 			break;
 		case PHY_LINK_SPEED_1000M:
 			ghc |= GHC_SPEED_1000M;
 			strcat(linkmsg, "1000 Mbps, ");
-			if (jme->rev == 0x11)
-				jme_set_gmii(jme);
+			if (is_buggy250(jme->pdev->device, jme->chiprev))
+				jme_set_phyfifoa(jme);
 			break;
 		default:
 			break;
@@ -1148,7 +1148,7 @@ jme_link_change_tasklet(unsigned long arg)
 	while (!atomic_dec_and_test(&jme->link_changing)) {
 		atomic_inc(&jme->link_changing);
 		msg_intr(jme, "Get link change lock failed.\n");
-		while(atomic_read(&jme->link_changing) != 1)
+		while (atomic_read(&jme->link_changing) != 1)
 			msg_intr(jme, "Waiting link change lock.\n");
 	}
 
@@ -2607,7 +2607,7 @@ jme_check_hw_ver(struct jme_adapter *jme)
 	chipmode = jread32(jme, JME_CHIPMODE);
 
 	jme->fpgaver = (chipmode & CM_FPGAVER_MASK) >> CM_FPGAVER_SHIFT;
-	jme->chipver = (chipmode & CM_CHIPVER_MASK) >> CM_CHIPVER_SHIFT;
+	jme->chiprev = (chipmode & CM_CHIPREV_MASK) >> CM_CHIPREV_SHIFT;
 }
 
 static int __devinit
@@ -2812,7 +2812,7 @@ jme_init_one(struct pci_dev *pdev,
 	jme->mii_if.mdio_write = jme_mdio_write;
 
 	jme_clear_pm(jme);
-	jme_set_gmii(jme);
+	jme_set_phyfifoa(jme);
 	pci_read_config_byte(pdev, PCI_REVISION_ID, &jme->rev);
 	if (!jme->fpgaver)
 		jme_phy_init(jme);
@@ -2846,11 +2846,11 @@ jme_init_one(struct pci_dev *pdev,
 	}
 
 	msg_probe(jme,
-		"JMC250 gigabit%s ver:%u rev:%1x.%1x "
+		"JMC250 gigabit%s ver:%x rev:%x "
 		"macaddr:%02x:%02x:%02x:%02x:%02x:%02x\n",
 		(jme->fpgaver != 0) ? " (FPGA)" : "",
-		(jme->fpgaver != 0) ? jme->fpgaver : jme->chipver,
-		jme->rev & 0xf, (jme->rev >> 4) & 0xf,
+		(jme->fpgaver != 0) ? jme->fpgaver : jme->chiprev,
+		jme->rev,
 		netdev->dev_addr[0],
 		netdev->dev_addr[1],
 		netdev->dev_addr[2],
