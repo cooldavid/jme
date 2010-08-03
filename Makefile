@@ -28,6 +28,9 @@ namespacecheck:
 	perl $(KSRC)/scripts/namespace.pl
 	@rm -rf $(TEMPFILES)
 
+patch:
+	@/usr/bin/diff -uarN -X dontdiff ../mod ./ > bc.patch || echo > /dev/null
+
 clean:
 	@rm -rf $(MODNAME).ko $(TEMPFILES)
 

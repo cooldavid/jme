@@ -22,10 +22,10 @@
  */
 
 #ifndef __JME_H_INCLUDED__
-#define __JME_H_INCLUDEE__
+#define __JME_H_INCLUDED__
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"1.0.3"
+#define DRV_VERSION	"1.0.4"
 #define PFX		DRV_NAME ": "
 
 #define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
@@ -372,7 +372,13 @@ struct jme_buffer_info {
 /*
  * The structure holding buffer information and ring descriptors all together.
  */
+#include <linux/version.h>
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+#define MAX_RING_DESC_NR	512
+#else
 #define MAX_RING_DESC_NR	1024
+#endif
+
 struct jme_ring {
 	void *alloc;		/* pointer to allocated memory */
 	void *desc;		/* pointer to ring memory  */
@@ -387,11 +393,38 @@ struct jme_ring {
 	atomic_t nr_free;
 };
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,18)
+#define false 0
+#define true 0
+#define netdev_alloc_skb(dev, len) dev_alloc_skb(len)
+#define PCI_VENDOR_ID_JMICRON           0x197B
+#endif
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,19)
+#define PCI_VDEVICE(vendor, device)             \
+        PCI_VENDOR_ID_##vendor, (device),       \
+        PCI_ANY_ID, PCI_ANY_ID, 0, 0
+#endif
+
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
 #define NET_STAT(priv) priv->stats
 #define NETDEV_GET_STATS(netdev, fun_ptr) \
 	netdev->get_stats = fun_ptr
 #define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
+static inline struct iphdr *ip_hdr(const struct sk_buff *skb)
+{
+	return skb->nh.iph;
+}
+
+static inline struct ipv6hdr *ipv6_hdr(const struct sk_buff *skb)
+{
+	return skb->nh.ipv6h;
+}
+
+static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
+{
+	return skb->h.th;
+}
 #else
 #define NET_STAT(priv) priv->dev->stats
 #define NETDEV_GET_STATS(netdev, fun_ptr)
@@ -407,6 +440,7 @@ struct jme_ring {
 #define JME_NAPI_WEIGHT(w) int *w
 #define JME_NAPI_WEIGHT_VAL(w) *w
 #define JME_NAPI_WEIGHT_SET(w, r) *w = r
+#define DECLARE_NETDEV struct net_device *netdev = jme->dev;
 #define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev)
 #define JME_NAPI_ENABLE(priv) netif_poll_enable(priv->dev);
 #define JME_NAPI_DISABLE(priv) netif_poll_disable(priv->dev);
@@ -414,6 +448,24 @@ struct jme_ring {
 	netif_rx_schedule_prep(priv->dev)
 #define JME_RX_SCHEDULE(priv) \
 	__netif_rx_schedule(priv->dev);
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,28)
+#define DECLARE_NAPI_STRUCT struct napi_struct napi;
+#define NETIF_NAPI_SET(dev, napis, pollfn, q) \
+	netif_napi_add(dev, napis, pollfn, q);
+#define JME_NAPI_HOLDER(holder) struct napi_struct *holder
+#define JME_NAPI_WEIGHT(w) int w
+#define JME_NAPI_WEIGHT_VAL(w) w
+#define JME_NAPI_WEIGHT_SET(w, r)
+#define DECLARE_NETDEV
+#define JME_RX_COMPLETE(dev, napis) napi_complete(napis)
+#define JME_NAPI_ENABLE(priv) napi_enable(&priv->napi);
+#define JME_NAPI_DISABLE(priv) \
+	if (!napi_disable_pending(&priv->napi)) \
+		napi_disable(&priv->napi);
+#define JME_RX_SCHEDULE_PREP(priv) \
+	napi_schedule_prep(&priv->napi)
+#define JME_RX_SCHEDULE(priv) \
+	__napi_schedule(&priv->napi);
 #else
 #define DECLARE_NAPI_STRUCT struct napi_struct napi;
 #define NETIF_NAPI_SET(dev, napis, pollfn, q) \
@@ -422,6 +474,7 @@ struct jme_ring {
 #define JME_NAPI_WEIGHT(w) int w
 #define JME_NAPI_WEIGHT_VAL(w) w
 #define JME_NAPI_WEIGHT_SET(w, r)
+#define DECLARE_NETDEV struct net_device *netdev = jme->dev;
 #define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev, napis)
 #define JME_NAPI_ENABLE(priv) napi_enable(&priv->napi);
 #define JME_NAPI_DISABLE(priv) \
@@ -488,6 +541,15 @@ struct jme_adapter {
 	DECLARE_NAPI_STRUCT
 	DECLARE_NET_DEVICE_STATS
 };
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+static struct net_device_stats *
+jme_get_stats(struct net_device *netdev)
+{
+	struct jme_adapter *jme = netdev_priv(netdev);
+	return &jme->stats;
+}
+#endif
 
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
@@ -850,16 +912,30 @@ static inline u32 smi_phy_addr(int x)
  * Global Host Control
  */
 enum jme_ghc_bit_mask {
-	GHC_SWRST	= 0x40000000,
-	GHC_DPX		= 0x00000040,
-	GHC_SPEED	= 0x00000030,
-	GHC_LINK_POLL	= 0x00000001,
+	GHC_SWRST		= 0x40000000,
+	GHC_DPX			= 0x00000040,
+	GHC_SPEED		= 0x00000030,
+	GHC_LINK_POLL		= 0x00000001,
 };
 
 enum jme_ghc_speed_val {
-	GHC_SPEED_10M	= 0x00000010,
-	GHC_SPEED_100M	= 0x00000020,
-	GHC_SPEED_1000M	= 0x00000030,
+	GHC_SPEED_10M		= 0x00000010,
+	GHC_SPEED_100M		= 0x00000020,
+	GHC_SPEED_1000M		= 0x00000030,
+};
+
+enum jme_ghc_to_clk {
+	GHC_TO_CLK_OFF		= 0x00000000,
+	GHC_TO_CLK_GPHY		= 0x00400000,
+	GHC_TO_CLK_PCIE		= 0x00800000,
+	GHC_TO_CLK_INVALID	= 0x00C00000,
+};
+
+enum jme_ghc_txmac_clk {
+	GHC_TXMAC_CLK_OFF	= 0x00000000,
+	GHC_TXMAC_CLK_GPHY	= 0x00100000,
+	GHC_TXMAC_CLK_PCIE	= 0x00200000,
+	GHC_TXMAC_CLK_INVALID	= 0x00300000,
 };
 
 /*
