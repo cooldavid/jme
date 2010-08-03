@@ -1,8 +1,9 @@
 
 MODNAME := jme
 TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions
-EXTRA_CFLAGS += -Wall -DDEBUG
-#EXTRA_CFLAGS += -Wall
+#EXTRA_CFLAGS += -Wall -DDEBUG -DTX_DEBUG -DRX_DEBUG
+#EXTRA_CFLAGS += -Wall -DDEBUG
+EXTRA_CFLAGS += -Wall
 
 obj-m := $(MODNAME).o
 

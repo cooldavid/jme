@@ -4,6 +4,8 @@
  * Copyright 2008 JMicron Technology Corporation
  * http://www.jmicron.com/
  *
+ * Author: Guo-Fu Tseng <cooldavid@cooldavid.org>
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License.
@@ -22,31 +24,33 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.2"
+#define DRV_VERSION	"0.3"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
 #define dprintk(devname, fmt, args...) \
-        printk(KERN_DEBUG PFX "%s: " fmt, devname, ## args);
+        printk(KERN_DEBUG PFX "%s: " fmt, devname, ## args)
 #else
 #define dprintk(devname, fmt, args...)
 #endif
 
+#ifdef TX_DEBUG
+#define	tx_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#else
+#define tx_dbg(args...)
+#endif
+
+#ifdef RX_DEBUG
+#define	rx_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#else
+#define rx_dbg(args...)
+#endif
+
 #define jprintk(devname, fmt, args...) \
-        printk(KERN_INFO PFX "%s: " fmt, devname, ## args);
+        printk(KERN_INFO PFX "%s: " fmt, devname, ## args)
 
 #define jeprintk(devname, fmt, args...) \
-        printk(KERN_ERR PFX "%s: " fmt, devname, ## args);
-
-#undef RX_QUEUE_DEBUG
-#undef RX_PKT_DEBUG
-#undef RX_ERR_DEBUG
-#undef TX_QUEUE_DEBUG
-#undef TX_PKT_DEBUG
-#undef TX_BUSY_DEBUG
-#undef INTERRUPT_DEBUG
-#undef SET_MULTI_DEBUG
-#undef TX_TASKLET_DEBUG
+        printk(KERN_ERR PFX "%s: " fmt, devname, ## args)
 
 #define USE_IEVE_SHADOW 0
 
@@ -69,6 +73,31 @@ enum pci_conf_dcsr_mrrs_vals {
 	MRRS_4096B	= 0x50,
 };
 
+enum dynamic_pcc_values {
+	PCC_P1		= 1,
+	PCC_P2		= 2,
+	PCC_P3		= 3,
+
+	PCC_P1_TO	= 1,
+	PCC_P2_TO	= 250,
+	PCC_P3_TO	= 1000,
+
+	PCC_P1_CNT	= 1,
+	PCC_P2_CNT	= 64,
+	PCC_P3_CNT	= 255,
+};
+struct dynpcc_info {
+	unsigned long	check_point;
+	unsigned long	last_bytes;
+	unsigned long	last_pkts;
+	unsigned char	cur;
+	unsigned char	attempt;
+	unsigned char	cnt;
+};
+#define PCC_INTERVAL (HZ / 10)
+#define PCC_P3_THRESHOLD 3*1024*1024
+#define PCC_P2_THRESHOLD 1000
+
 /*
  * TX/RX Descriptors
  *
@@ -83,7 +112,7 @@ enum pci_conf_dcsr_mrrs_vals {
 #define TX_RING_ALLOC_SIZE	(RING_DESC_NR * TX_DESC_SIZE) + TX_DESC_SIZE
 #define TX_RING_SIZE		(RING_DESC_NR * TX_DESC_SIZE)
 
-struct TxDesc {
+struct txdesc {
 	union {
 		__u8  all[16];
 		__u32 dw[4];
@@ -104,11 +133,28 @@ struct TxDesc {
 			/* DW3 */
 			__u32 bufaddr;
 		} desc1;
+		struct {
+			/* DW0 */
+			__u16 rsv1;
+			__u8 rsv2;
+			__u8 flags;
+
+			/* DW1 */
+			__u16 datalen;
+			__u16 rsv3;
+
+			/* DW2 */
+			__u32 bufaddrh;
+
+			/* DW3 */
+			__u32 bufaddrl;
+		} desc2;
 	};
 };
 enum jme_txdesc_flag_bits {
 	TXFLAG_OWN	= 0x80,
 	TXFLAG_INT	= 0x40,
+	TXFLAG_64BIT	= 0x20,
 	TXFLAG_TCPCS	= 0x10,
 	TXFLAG_UDPCS	= 0x08,
 	TXFLAG_IPCS	= 0x04,
@@ -124,13 +170,16 @@ enum jme_txdesc_flag_bits {
 
 #define RX_BUF_DMA_ALIGN	8
 //#define RX_BUF_SIZE		1600
-#define RX_BUF_SIZE		9216
+#define RX_BUF_SIZE		9200
+//#define RX_BUF_SIZE		4000
+#define RX_PREPAD_SIZE		10
+
 /*
  * Will use mtu in the future
  */
 #define RX_BUF_ALLOC_SIZE	RX_BUF_SIZE + RX_BUF_DMA_ALIGN
 
-struct RxDesc {
+struct rxdesc {
 	union {
 		__u8   all[16];
 		__le32 dw[4];
@@ -164,8 +213,8 @@ struct RxDesc {
 			__le32 rsshash;
 
 			/* DW3 */
-			__u8   hashfun; 
-			__u8   hashtype; 
+			__u8   hashfun;
+			__u8   hashtype;
 			__le16 resrv;
 		} descwb;
 	};
@@ -216,11 +265,12 @@ struct jme_buffer_info {
 	struct sk_buff *skb;
 	dma_addr_t mapping;
 	int len;
+	int nr_desc;
 };
 
 struct jme_ring {
         void* alloc;		/* pointer to allocated memory */
-        void* desc;		/* pointer to ring memory  */
+        volatile void* desc;	/* pointer to ring memory  */
         dma_addr_t dmaalloc;	/* phys address of ring alloc */
         dma_addr_t dma;		/* phys address for ring dma */
 
@@ -229,7 +279,20 @@ struct jme_ring {
 
         u16 next_to_use;
         u16 next_to_clean;
+
+	u16 nr_free;
 };
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+#define NET_STAT(priv) priv->stats
+#define NETDEV_GET_STATS(netdev, fun_ptr) \
+	netdev->get_stats = fun_ptr
+#define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
+#else
+#define NET_STAT(priv) priv->dev->stats
+#define NETDEV_GET_STATS(netdev, fun_ptr)
+#define DECLARE_NET_DEVICE_STATS
+#endif
 
 /*
  * Jmac Adapter Private data
@@ -244,33 +307,28 @@ struct jme_adapter {
 	struct mii_if_info	mii_if;
 	struct jme_ring		rxring[RX_RING_NR];
 	struct jme_ring		txring[TX_RING_NR];
-	spinlock_t		xmit_lock;
-	spinlock_t		recv_lock;
-	spinlock_t		macaddr_lock;
+	spinlock_t		rx_lock;
+	spinlock_t		tx_lock;
 	spinlock_t		phy_lock;
 	struct tasklet_struct	rxclean_task;
 	struct tasklet_struct	txclean_task;
 	struct tasklet_struct	linkch_task;
 	__u32			flags;
 	__u32			reg_txcs;
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
-	struct net_device_stats	stats;
-#endif
+	__u32			reg_rxmcs;
+	__u32			reg_ghc;
+	struct dynpcc_info	dpi;
+	atomic_t		intr_sem;
+	DECLARE_NET_DEVICE_STATS
 };
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
 };
 
-#define JME_FLAG_RXQ0_EMPTY	0x00000001
-#define JME_FLAG_RXQ1_EMPTY	0x00000002
-#define JME_FLAG_RXQ2_EMPTY	0x00000004
-#define JME_FLAG_RXQ3_EMPTY	0x00000008
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
-#define NET_STAT jme->stats
-#else
-#define NET_STAT netdev->stats
-#endif
+#define JME_FLAG_RXQ0_EMPTY    0x00000001
+#define JME_FLAG_RXQ1_EMPTY    0x00000002
+#define JME_FLAG_RXQ2_EMPTY    0x00000004
+#define JME_FLAG_RXQ3_EMPTY    0x00000008
 
 /*
  * MMaped I/O Resters
@@ -284,7 +342,8 @@ enum jme_iomap_offsets {
 
 enum jme_iomap_regs {
 	JME_TXCS	= JME_MAC | 0x00, /* Transmit Control and Status */
-	JME_TXDBA	= JME_MAC | 0x04, /* Transmit Queue Desc Base Addr */
+	JME_TXDBA_LO	= JME_MAC | 0x04, /* Transmit Queue Desc Base Addr */
+	JME_TXDBA_HI	= JME_MAC | 0x08, /* Transmit Queue Desc Base Addr */
 	JME_TXQDC	= JME_MAC | 0x0C, /* Transmit Queue Desc Count */
 	JME_TXNDA	= JME_MAC | 0x10, /* Transmit Queue Next Desc Addr */
 	JME_TXMCS	= JME_MAC | 0x14, /* Transmit MAC Control Status */
@@ -292,14 +351,15 @@ enum jme_iomap_regs {
 	JME_TXTRHD	= JME_MAC | 0x1C, /* Transmit Timer/Retry@Half-Dup */
 
 	JME_RXCS	= JME_MAC | 0x20, /* Receive Control and Status */
-	JME_RXDBA	= JME_MAC | 0x24, /* Receive Queue Desc Base Addr */
+	JME_RXDBA_LO	= JME_MAC | 0x24, /* Receive Queue Desc Base Addr */
+	JME_RXDBA_HI	= JME_MAC | 0x28, /* Receive Queue Desc Base Addr */
 	JME_RXQDC	= JME_MAC | 0x2C, /* Receive Queue Desc Count */
 	JME_RXNDA	= JME_MAC | 0x30, /* Receive Queue Next Desc Addr */
 	JME_RXMCS	= JME_MAC | 0x34, /* Receive MAC Control Status */
 	JME_RXUMA_LO	= JME_MAC | 0x38, /* Receive Unicast MAC Address */
 	JME_RXUMA_HI	= JME_MAC | 0x3C, /* Receive Unicast MAC Address */
-	JME_RXMCHT_LO	= JME_MAC | 0x40, /* Receive Multicast Addr HashTable */
-	JME_RXMCHT_HI	= JME_MAC | 0x44, /* Receive Multicast Addr HashTable */
+	JME_RXMCHT_LO	= JME_MAC | 0x40, /* Recv Multicast Addr HashTable */
+	JME_RXMCHT_HI	= JME_MAC | 0x44, /* Recv Multicast Addr HashTable */
 	JME_WFODP	= JME_MAC | 0x48, /* Wakeup Frame Output Data Port */
 	JME_WFOI	= JME_MAC | 0x4C, /* Wakeup Frame Output Interface */
 
@@ -308,7 +368,7 @@ enum jme_iomap_regs {
 	JME_PMCS	= JME_MAC | 0x60, /* Power Management Control/Stat */
 
 
-	JME_PHY_CS	= JME_PHY | 0x28, /* PHY Control and Status Register */
+	JME_PHY_CS	= JME_PHY | 0x28, /* PHY Ctrl and Status Register */
 	JME_PHY_LINK	= JME_PHY | 0x30, /* PHY Link Status Register */
 	JME_SMBCSR	= JME_PHY | 0x40, /* SMB Control and Status */
 
@@ -316,11 +376,14 @@ enum jme_iomap_regs {
 	JME_GPREG0	= JME_MISC| 0x08, /* General purpose REG-0 */
 	JME_GPREG1	= JME_MISC| 0x0C, /* General purpose REG-1 */
 	JME_IEVE	= JME_MISC| 0x20, /* Interrupt Event Status */
-	JME_IREQ	= JME_MISC| 0x24, /* Interrupt Req Status (For Debug) */
+	JME_IREQ	= JME_MISC| 0x24, /* Interrupt Req Status(For Debug) */
 	JME_IENS	= JME_MISC| 0x28, /* Interrupt Enable - Setting Port */
-	JME_IENC	= JME_MISC| 0x2C, /* Interrupt Enable - Clearing Port */
+	JME_IENC	= JME_MISC| 0x2C, /* Interrupt Enable - Clear Port */
+	JME_PCCRX0	= JME_MISC| 0x30, /* PCC Control for RX Queue 0 */
+	JME_PCCTX	= JME_MISC| 0x40, /* PCC Control for TX Queues */
 	JME_SHBA_HI	= JME_MISC| 0x48, /* Shadow Register Base HI */
 	JME_SHBA_LO	= JME_MISC| 0x4C, /* Shadow Register Base LO */
+	JME_PCCSRX0	= JME_MISC| 0x80, /* PCC Status of RX0 */
 };
 
 /*
@@ -410,8 +473,10 @@ enum jme_txmcs_values {
  * RX Control/Status Bits
  */
 enum jme_rxcs_bit_masks {
-	RXCS_FIFOTHTP	= 0x30000000, /* FIFO full threshold for transmitting Tx Pause Packet */
-	RXCS_FIFOTHNP	= 0x0C000000, /* FIFO threshold for processing next packet */
+	/* FIFO full threshold for transmitting Tx Pause Packet */
+	RXCS_FIFOTHTP	= 0x30000000,
+	/* FIFO threshold for processing next packet */
+	RXCS_FIFOTHNP	= 0x0C000000,
 	RXCS_DMAREQSZ	= 0x03000000, /* DMA Request Size */
 	RXCS_QUEUESEL	= 0x00030000, /* Queue selection */
 	RXCS_RETRYGAP	= 0x0000F000, /* RX Desc full retry gap */
@@ -489,6 +554,11 @@ enum jme_rxmcs_bits {
 	RXMCS_UNIFRAME		= 0x00000100,
 	RXMCS_ALLMULFRAME	= 0x00000080,
 	RXMCS_MULFILTERED	= 0x00000040,
+	RXMCS_RXCOLLDEC		= 0x00000020,
+	RXMCS_FLOWCTRL		= 0x00000008,
+	RXMCS_VTAGRM		= 0x00000004,
+	RXMCS_PREPAD		= 0x00000002,
+	RXMCS_CHECKSUM		= 0x00000001,
 };
 
 /*
@@ -500,7 +570,8 @@ enum jme_smi_bit_mask
 	SMI_REG_ADDR_MASK	= 0x0000F800,
 	SMI_PHY_ADDR_MASK	= 0x000007C0,
 	SMI_OP_WRITE		= 0x00000020,
-	SMI_OP_REQ		= 0x00000010, /* Set to 1, after req done it'll be cleared to 0 */
+	/* Set to 1, after req done it'll be cleared to 0 */
+	SMI_OP_REQ		= 0x00000010,
 	SMI_OP_MDIO		= 0x00000008, /* Software assess In/Out */
 	SMI_OP_MDOE		= 0x00000004, /* Software Output Enable */
 	SMI_OP_MDC		= 0x00000002, /* Software CLK Control */
@@ -521,6 +592,7 @@ __always_inline __u32 smi_phy_addr(int x)
         return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
 }
 #define JME_PHY_TIMEOUT 1000 /* 1000 usec */
+#define JME_PHY_RST_TIMEOUT 100 /* 100 usec */
 
 /*
  * Global Host Control
@@ -538,7 +610,7 @@ enum jme_ghc_speed_val {
 };
 
 /*
- * Giga PHY Status Registers 
+ * Giga PHY Status Registers
  */
 enum jme_phy_link_bit_mask {
 	PHY_LINK_SPEED_MASK		= 0x0000C000,
@@ -570,10 +642,11 @@ enum jme_smbcsr_bit_mask
  * General Purpost REG-0
  */
 enum jme_gpreg0_masks {
-	GPREG0_DISSH	= 0xFF000000,
-	GPREG0_PCIRLMT	= 0x00300000,
-	GPREG0_PCCTMR	= 0x00000300,
-	GPREG0_PHYADDR	= 0x0000001F,
+	GPREG0_DISSH		= 0xFF000000,
+	GPREG0_PCIRLMT		= 0x00300000,
+	GPREG0_PCCNOMUTCLR	= 0x00040000,
+	GPREG0_PCCTMR		= 0x00000300,
+	GPREG0_PHYADDR		= 0x0000001F,
 };
 enum jme_gpreg0_vals {
 	GPREG0_DISSH_DW7	= 0x80000000,
@@ -592,14 +665,16 @@ enum jme_gpreg0_vals {
 	GPREG0_PCIRLMT_4	= 0x00300000,
 
 	GPREG0_PCCTMR_16ns	= 0x00000000,
-	GPREG0_PCCTMR_256ns	= 0x00000010,
-	GPREG0_PCCTMR_1us	= 0x00000020,
-	GPREG0_PCCTMR_1ms	= 0x00000030,
+	GPREG0_PCCTMR_256ns	= 0x00000100,
+	GPREG0_PCCTMR_1us	= 0x00000200,
+	GPREG0_PCCTMR_1ms	= 0x00000300,
 
 	GPREG0_PHYADDR_1	= 0x00000001,
 
 	GPREG0_DEFAULT		= GPREG0_PCIRLMT_4 |
-				  GPREG0_PHYADDR_1,	
+				  GPREG0_PCCNOMUTCLR |
+				  GPREG0_PCCTMR_1us |
+				  GPREG0_PHYADDR_1,
 };
 
 /*
@@ -642,8 +717,42 @@ enum jme_interrupt_bits
 };
 static const __u32 INTR_ENABLE = INTR_LINKCH |
 				 INTR_RX0EMP |
-				 INTR_RX0 |
-				 INTR_TX0;
+				 INTR_PCCRX0TO |
+				 INTR_PCCRX0 |
+				 INTR_PCCTXTO |
+				 INTR_PCCTX;
+
+/*
+ * PCC Control Registers
+ */
+enum jme_pccrx_masks {
+	PCCRXTO_MASK	= 0xFFFF0000,
+	PCCRX_MASK	= 0x0000FF00,
+};
+enum jme_pcctx_masks {
+	PCCTXTO_MASK	= 0xFFFF0000,
+	PCCTX_MASK	= 0x0000FF00,
+	PCCTX_QS_MASK	= 0x000000FF,
+};
+enum jme_pccrx_shifts {
+	PCCRXTO_SHIFT	= 16,
+	PCCRX_SHIFT	= 8,
+};
+enum jme_pcctx_shifts {
+	PCCTXTO_SHIFT	= 16,
+	PCCTX_SHIFT	= 8,
+};
+enum jme_pcctx_bits {
+	PCCTXQ0_EN	= 0x00000001,
+	PCCTXQ1_EN	= 0x00000002,
+	PCCTXQ2_EN	= 0x00000004,
+	PCCTXQ3_EN	= 0x00000008,
+	PCCTXQ4_EN	= 0x00000010,
+	PCCTXQ5_EN	= 0x00000020,
+	PCCTXQ6_EN	= 0x00000040,
+	PCCTXQ7_EN	= 0x00000080,
+};
+
 
 /*
  * Shadow base address register bits
