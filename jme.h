@@ -387,10 +387,34 @@ struct jme_ring {
 	atomic_t nr_free;
 };
 
-#define NET_STAT(priv) (priv->dev->stats)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+#define NET_STAT(priv) priv->stats
+#define NETDEV_GET_STATS(netdev, fun_ptr) \
+	netdev->get_stats = fun_ptr
+#define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
+#else
+#define NET_STAT(priv) priv->dev->stats
 #define NETDEV_GET_STATS(netdev, fun_ptr)
 #define DECLARE_NET_DEVICE_STATS
+#endif
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+#define DECLARE_NAPI_STRUCT
+#define NETIF_NAPI_SET(dev, napis, pollfn, q) \
+	dev->poll = pollfn; \
+	dev->weight = q;
+#define JME_NAPI_HOLDER(holder) struct net_device *holder
+#define JME_NAPI_WEIGHT(w) int *w
+#define JME_NAPI_WEIGHT_VAL(w) *w
+#define JME_NAPI_WEIGHT_SET(w, r) *w = r
+#define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev)
+#define JME_NAPI_ENABLE(priv) netif_poll_enable(priv->dev);
+#define JME_NAPI_DISABLE(priv) netif_poll_disable(priv->dev);
+#define JME_RX_SCHEDULE_PREP(priv) \
+	netif_rx_schedule_prep(priv->dev)
+#define JME_RX_SCHEDULE(priv) \
+	__netif_rx_schedule(priv->dev);
+#else
 #define DECLARE_NAPI_STRUCT struct napi_struct napi;
 #define NETIF_NAPI_SET(dev, napis, pollfn, q) \
 	netif_napi_add(dev, napis, pollfn, q);
@@ -401,12 +425,13 @@ struct jme_ring {
 #define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev, napis)
 #define JME_NAPI_ENABLE(priv) napi_enable(&priv->napi);
 #define JME_NAPI_DISABLE(priv) \
-	if (!napi_disable_pending(&priv->napi)) \
+	if(!napi_disable_pending(&priv->napi)) \
 		napi_disable(&priv->napi);
 #define JME_RX_SCHEDULE_PREP(priv) \
 	netif_rx_schedule_prep(priv->dev, &priv->napi)
 #define JME_RX_SCHEDULE(priv) \
 	__netif_rx_schedule(priv->dev, &priv->napi);
+#endif
 
 /*
  * Jmac Adapter Private data
@@ -481,13 +506,23 @@ enum jme_flags_bits {
 #define JME_REG_LEN		0x500
 #define MAX_ETHERNET_JUMBO_PACKET_SIZE 9216
 
-static inline struct jme_adapter*
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+__always_inline static struct jme_adapter*
+jme_napi_priv(struct net_device *holder)
+{
+	struct jme_adapter* jme;
+	jme = netdev_priv(holder);
+	return jme;
+}
+#else
+__always_inline static struct jme_adapter*
 jme_napi_priv(struct napi_struct *napi)
 {
-	struct jme_adapter *jme;
+	struct jme_adapter* jme;
 	jme = container_of(napi, struct jme_adapter, napi);
 	return jme;
 }
+#endif
 
 /*
  * MMaped I/O Resters
