@@ -98,8 +98,7 @@ jme_mdio_write(struct net_device *netdev,
 	wmb();
 	for (i = JME_PHY_TIMEOUT * 50 ; i > 0 ; --i) {
 		udelay(20);
-		val = jread32(jme, JME_SMI);
-		if ((val & SMI_OP_REQ) == 0)
+		if ((jread32(jme, JME_SMI) & SMI_OP_REQ) == 0)
 			break;
 	}
 
@@ -119,10 +118,11 @@ jme_reset_phy_processor(struct jme_adapter *jme)
 			MII_ADVERTISE, ADVERTISE_ALL |
 			ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM);
 
-	jme_mdio_write(jme->dev,
-			jme->mii_if.phy_id,
-			MII_CTRL1000,
-			ADVERTISE_1000FULL | ADVERTISE_1000HALF);
+	if(jme->pdev->device == JME_GE_DEVICE)
+		jme_mdio_write(jme->dev,
+				jme->mii_if.phy_id,
+				MII_CTRL1000,
+				ADVERTISE_1000FULL | ADVERTISE_1000HALF);
 
 	val = jme_mdio_read(jme->dev,
 				jme->mii_if.phy_id,
@@ -331,7 +331,7 @@ jme_linkstat_from_phy(struct jme_adapter *jme)
 
 	phylink = jme_mdio_read(jme->dev, jme->mii_if.phy_id, 17);
 	bmsr = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_BMSR);
-	if(bmsr & BMCR_ANCOMP)
+	if(bmsr & BMSR_ANCOMP)
 		phylink |= PHY_LINK_AUTONEG_COMPLETE;
 
 	return phylink;
@@ -1794,7 +1794,7 @@ jme_fill_first_tx_desc(struct jme_adapter *jme, struct sk_buff *skb, int idx)
 	txbi->skb = skb;
 	txbi->len = skb->len;
 	if(!(txbi->start_xmit = jiffies))
-		txbi->start_xmit = 1;
+		txbi->start_xmit = (0UL-1);
 
 	return 0;
 }
@@ -2457,7 +2457,7 @@ jme_get_eeprom(struct net_device *netdev,
 	int i, offset = eeprom->offset, len = eeprom->len;
 
 	/*
-	 * ethtool will check boundary for us
+	 * ethtool will check the boundary for us
 	 */
 	eeprom->magic = JME_EEPROM_MAGIC;
 	for(i = 0 ; i < len ; ++i)
@@ -2477,7 +2477,7 @@ jme_set_eeprom(struct net_device *netdev,
 		return -EINVAL;
 
 	/*
-	 * ethtool will check boundary for us
+	 * ethtool will check the boundary for us
 	 */
 	for(i = 0 ; i < len ; ++i)
 		jme_smb_write(jme, i + offset, data[i]);
@@ -2689,7 +2689,10 @@ jme_init_one(struct pci_dev *pdev,
 		     (unsigned long) jme);
 	jme->dpi.cur = PCC_P1;
 
-	jme->reg_ghc = GHC_DPX | GHC_SPEED_1000M;
+	if(pdev->device == JME_GE_DEVICE)
+		jme->reg_ghc = GHC_DPX | GHC_SPEED_1000M;
+	else
+		jme->reg_ghc = GHC_DPX | GHC_SPEED_100M;
 	jme->reg_rxcs = RXCS_DEFAULT;
 	jme->reg_rxmcs = RXMCS_DEFAULT;
 	jme->reg_txpfc = 0;
@@ -2740,7 +2743,10 @@ jme_init_one(struct pci_dev *pdev,
 	else {
 		jme->mii_if.phy_id = 1;
 	}
-	jme->mii_if.supports_gmii = 1;
+	if(pdev->device == JME_GE_DEVICE)
+		jme->mii_if.supports_gmii = true;
+	else
+		jme->mii_if.supports_gmii = false;
 	jme->mii_if.mdio_read = jme_mdio_read;
 	jme->mii_if.mdio_write = jme_mdio_write;
 
@@ -2914,7 +2920,8 @@ jme_resume(struct pci_dev *pdev)
 }
 
 static struct pci_device_id jme_pci_tbl[] = {
-	{ PCI_VDEVICE(JMICRON, 0x250) },
+	{ PCI_VDEVICE(JMICRON, JME_GE_DEVICE) },
+	{ PCI_VDEVICE(JMICRON, JME_FE_DEVICE) },
 	{ }
 };
 

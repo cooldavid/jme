@@ -24,8 +24,11 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9c"
+#define DRV_VERSION	"0.9d"
 #define PFX DRV_NAME	": "
+
+#define JME_GE_DEVICE 0x250
+#define JME_FE_DEVICE 0x260
 
 #ifdef DEBUG
 #define dprintk(devname, fmt, args...) \
@@ -774,7 +777,7 @@ __always_inline __u32 smi_phy_addr(int x)
 {
         return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
 }
-#define JME_PHY_TIMEOUT 1000 /* 1000 msec */
+#define JME_PHY_TIMEOUT 100 /* 100 msec */
 #define JME_PHY_REG_NR 32
 
 /*
@@ -1056,7 +1059,7 @@ enum jme_phy_reg17_vals {
 	PREG17_SPEED_100M	= 0x4000,
 	PREG17_SPEED_1000M	= 0x8000,
 };
-#define BMCR_ANCOMP               0x0020
+#define BMSR_ANCOMP               0x0020
 
 /*
  * Function prototypes for ethtool
