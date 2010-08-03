@@ -25,7 +25,7 @@
 #define __JME_H_INCLUDED__
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"1.0.5"
+#define DRV_VERSION	"1.0.6-jmmod"
 #define PFX		DRV_NAME ": "
 
 #define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
@@ -45,12 +45,18 @@
 	printk(KERN_ERR PFX fmt, ## args)
 
 #ifdef TX_DEBUG
-#define tx_dbg(priv, fmt, args...) \
-	printk(KERN_DEBUG "%s: " fmt, (priv)->dev->name, ## args)
+#define tx_dbg(priv, fmt, args...)					\
+	printk(KERN_DEBUG "%s: " fmt, (priv)->dev->name, ##args)
 #else
-#define tx_dbg(priv, fmt, args...)
+#define tx_dbg(priv, fmt, args...)					\
+do {									\
+	if (0)								\
+		printk(KERN_DEBUG "%s: " fmt, (priv)->dev->name, ##args); \
+} while (0)
 #endif
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 #define jme_msg(msglvl, type, priv, fmt, args...) \
 	if (netif_msg_##type(priv)) \
 		printk(msglvl "%s: " fmt, (priv)->dev->name, ## args)
@@ -81,6 +87,7 @@
 
 #define msg_hw(priv, fmt, args...) \
 	jme_msg(KERN_ERR, hw, priv, fmt, ## args)
+#endif
 
 /*
  * Extra PCI Configuration space interface
@@ -386,7 +393,6 @@ struct jme_ring {
 	atomic_t nr_free;
 };
 
-#include <linux/version.h>
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,18)
 #define false 0
 #define true 0
@@ -475,6 +481,7 @@ struct jme_adapter {
 	spinlock_t		phy_lock;
 	spinlock_t		macaddr_lock;
 	spinlock_t		rxmcs_lock;
+	spinlock_t		vlgrp_lock;
 	struct tasklet_struct	rxempty_task;
 	struct tasklet_struct	rxclean_task;
 	struct tasklet_struct	txclean_task;

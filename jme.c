@@ -288,7 +288,11 @@ jme_set_rx_pcc(struct jme_adapter *jme, int p)
 	wmb();
 
 	if (!(test_bit(JME_FLAG_POLL, &jme->flags)))
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_rx_status(jme, "Switched to PCC_P%d\n", p);
+#else
+		netif_info(jme, rx_status, jme->dev, "Switched to PCC_P%d\n", p);
+#endif
 }
 
 static void
@@ -483,13 +487,21 @@ jme_check_link(struct net_device *netdev, int testonly)
 		strcat(linkmsg, (phylink & PHY_LINK_MDI_STAT) ?
 					"MDI-X" :
 					"MDI");
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_link(jme, "Link is up at %s.\n", linkmsg);
+#else
+		netif_info(jme, link, jme->dev, "Link is up at %s.\n", linkmsg);
+#endif
 		netif_carrier_on(netdev);
 	} else {
 		if (testonly)
 			goto out;
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_link(jme, "Link is down.\n");
+#else
+		netif_info(jme, link, jme->dev, "Link is down.\n");
+#endif
 		jme->phylink = 0;
 		netif_carrier_off(netdev);
 	}
@@ -886,20 +898,32 @@ jme_rxsum_ok(struct jme_adapter *jme, u16 flags)
 	if (unlikely((flags & (RXWBFLAG_MF | RXWBFLAG_TCPON | RXWBFLAG_TCPCS))
 			== RXWBFLAG_TCPON)) {
 		if (flags & RXWBFLAG_IPV4)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 			msg_rx_err(jme, "TCP Checksum error\n");
+#else
+			netif_err(jme, rx_err, jme->dev, "TCP Checksum error\n");
+#endif
 		return false;
 	}
 
 	if (unlikely((flags & (RXWBFLAG_MF | RXWBFLAG_UDPON | RXWBFLAG_UDPCS))
 			== RXWBFLAG_UDPON)) {
 		if (flags & RXWBFLAG_IPV4)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 			msg_rx_err(jme, "UDP Checksum error.\n");
+#else
+			netif_err(jme, rx_err, jme->dev, "UDP Checksum error.\n");
+#endif
 		return false;
 	}
 
 	if (unlikely((flags & (RXWBFLAG_IPV4 | RXWBFLAG_IPCS))
 			== RXWBFLAG_IPV4)) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_rx_err(jme, "IPv4 Checksum error.\n");
+#else
+		netif_err(jme, rx_err, jme->dev, "IPv4 Checksum error.\n");
+#endif
 		return false;
 	}
 
@@ -945,10 +969,15 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 			skb->ip_summed = CHECKSUM_NONE;
 
 		if (rxdesc->descwb.flags & cpu_to_le16(RXWBFLAG_TAGON)) {
+			spin_lock(&jme->vlgrp_lock);
 			if (jme->vlgrp) {
 				jme->jme_vlan_rx(skb, jme->vlgrp,
 					le16_to_cpu(rxdesc->descwb.vlan));
+				spin_unlock(&jme->vlgrp_lock);
 				NET_STAT(jme).rx_bytes += 4;
+			} else {
+				spin_unlock(&jme->vlgrp_lock);
+				dev_kfree_skb(skb);
 			}
 		} else {
 			jme->jme_rx(skb);
@@ -1053,8 +1082,8 @@ jme_dynamic_pcc(struct jme_adapter *jme)
 
 	if ((NET_STAT(jme).rx_bytes - dpi->last_bytes) > PCC_P3_THRESHOLD)
 		jme_attempt_pcc(dpi, PCC_P3);
-	else if ((NET_STAT(jme).rx_packets - dpi->last_pkts) > PCC_P2_THRESHOLD
-	|| dpi->intr_cnt > PCC_INTR_THRESHOLD)
+	else if ((NET_STAT(jme).rx_packets - dpi->last_pkts) > PCC_P2_THRESHOLD ||
+		 dpi->intr_cnt > PCC_INTR_THRESHOLD)
 		jme_attempt_pcc(dpi, PCC_P2);
 	else
 		jme_attempt_pcc(dpi, PCC_P1);
@@ -1189,9 +1218,17 @@ jme_link_change_tasklet(unsigned long arg)
 
 	while (!atomic_dec_and_test(&jme->link_changing)) {
 		atomic_inc(&jme->link_changing);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_intr(jme, "Get link change lock failed.\n");
+#else
+		netif_info(jme, intr, jme->dev, "Get link change lock failed.\n");
+#endif
 		while (atomic_read(&jme->link_changing) != 1)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 			msg_intr(jme, "Waiting link change lock.\n");
+#else
+			netif_info(jme, intr, jme->dev, "Waiting link change lock.\n");
+#endif
 	}
 
 	if (jme_check_link(netdev, 1) && jme->old_mtu == netdev->mtu)
@@ -1309,7 +1346,11 @@ jme_rx_empty_tasklet(unsigned long arg)
 	if (unlikely(!netif_carrier_ok(jme->dev)))
 		return;
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 	msg_rx_status(jme, "RX Queue Full!\n");
+#else
+	netif_info(jme, rx_status, jme->dev, "RX Queue Full!\n");
+#endif
 
 	jme_rx_clean_tasklet(arg);
 
@@ -1329,7 +1370,11 @@ jme_wake_queue_if_stopped(struct jme_adapter *jme)
 	smp_wmb();
 	if (unlikely(netif_queue_stopped(jme->dev) &&
 	atomic_read(&txring->nr_free) >= (jme->tx_wake_threshold))) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_tx_done(jme, "TX Queue Waked.\n");
+#else
+		netif_info(jme, tx_done, jme->dev, "TX Queue Waked.\n");
+#endif
 		netif_wake_queue(jme->dev);
 	}
 
@@ -1877,7 +1922,11 @@ jme_tx_csum(struct jme_adapter *jme, struct sk_buff *skb, u8 *flags)
 			*flags |= TXFLAG_UDPCS;
 			break;
 		default:
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 			msg_tx_err(jme, "Error upper layer protocol.\n");
+#else
+			netif_err(jme, tx_err, jme->dev, "Error upper layer protocol.\n");
+#endif
 			break;
 		}
 	}
@@ -1952,12 +2001,20 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
 	smp_wmb();
 	if (unlikely(atomic_read(&txring->nr_free) < (MAX_SKB_FRAGS+2))) {
 		netif_stop_queue(jme->dev);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_tx_queued(jme, "TX Queue Paused.\n");
+#else
+		netif_info(jme, tx_queued, jme->dev, "TX Queue Paused.\n");
+#endif
 		smp_wmb();
 		if (atomic_read(&txring->nr_free)
 			>= (jme->tx_wake_threshold)) {
 			netif_wake_queue(jme->dev);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 			msg_tx_queued(jme, "TX Queue Fast Waked.\n");
+#else
+			netif_info(jme, tx_queued, jme->dev, "TX Queue Fast Waked.\n");
+#endif
 		}
 	}
 
@@ -1965,7 +2022,11 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
 			(jiffies - txbi->start_xmit) >= TX_TIMEOUT &&
 			txbi->skb)) {
 		netif_stop_queue(jme->dev);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_tx_queued(jme, "TX Queue Stopped %d@%lu.\n", idx, jiffies);
+#else
+		netif_info(jme, tx_queued, jme->dev, "TX Queue Stopped %d@%lu.\n", idx, jiffies);
+#endif
 	}
 }
 
@@ -1973,7 +2034,11 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
  * This function is already protected by netif_tx_lock()
  */
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,31)
 static int
+#else
+static netdev_tx_t
+#endif
 jme_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
@@ -1988,7 +2053,11 @@ jme_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	if (unlikely(idx < 0)) {
 		netif_stop_queue(netdev);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_tx_err(jme, "BUG! Tx ring full when queue awake!\n");
+#else
+		netif_err(jme, tx_err, jme->dev, "BUG! Tx ring full when queue awake!\n");
+#endif
 
 		return NETDEV_TX_BUSY;
 	}
@@ -2042,7 +2111,9 @@ jme_set_multi(struct net_device *netdev)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
 	u32 mc_hash[2] = {};
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 	int i;
+#endif
 
 	spin_lock_bh(&jme->rxmcs_lock);
 
@@ -2057,10 +2128,13 @@ jme_set_multi(struct net_device *netdev)
 		int bit_nr;
 
 		jme->reg_rxmcs |= RXMCS_MULFRAME | RXMCS_MULFILTERED;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		for (i = 0, mclist = netdev->mc_list;
 			mclist && i < netdev->mc_count;
 			++i, mclist = mclist->next) {
-
+#else
+		netdev_for_each_mc_addr(mclist, netdev) {
+#endif
 			bit_nr = ether_crc(ETH_ALEN, mclist->dmi_addr) & 0x3F;
 			mc_hash[bit_nr >> 5] |= 1 << (bit_nr & 0x1F);
 		}
@@ -2142,8 +2216,28 @@ jme_vlan_rx_register(struct net_device *netdev, struct vlan_group *grp)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
 
+	spin_lock_bh(&jme->vlgrp_lock);
 	jme->vlgrp = grp;
+	spin_unlock_bh(&jme->vlgrp_lock);
 }
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+static void
+jme_vlan_rx_kill_vid(struct net_device *netdev, unsigned short vid)
+{
+	struct jme_adapter *jme = netdev_priv(netdev);
+
+	spin_lock_bh(&jme->vlgrp_lock);
+	if(jme->vlgrp) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,20)
+		jme->vlgrp->vlan_devices[vid] = NULL;
+#else
+		vlan_group_set_device(jme->vlgrp, vid, NULL);
+#endif
+	}
+	spin_unlock_bh(&jme->vlgrp_lock);
+}
+#endif
 
 static void
 jme_get_drvinfo(struct net_device *netdev,
@@ -2251,8 +2345,8 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 	if (netif_running(netdev))
 		return -EBUSY;
 
-	if (ecmd->use_adaptive_rx_coalesce
-	&& test_bit(JME_FLAG_POLL, &jme->flags)) {
+	if (ecmd->use_adaptive_rx_coalesce &&
+	    test_bit(JME_FLAG_POLL, &jme->flags)) {
 		clear_bit(JME_FLAG_POLL, &jme->flags);
 		jme->jme_rx = netif_rx;
 		jme->jme_vlan_rx = vlan_hwaccel_rx;
@@ -2261,8 +2355,8 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 		dpi->cnt		= 0;
 		jme_set_rx_pcc(jme, PCC_P1);
 		jme_interrupt_mode(jme);
-	} else if (!(ecmd->use_adaptive_rx_coalesce)
-	&& !(test_bit(JME_FLAG_POLL, &jme->flags))) {
+	} else if (!(ecmd->use_adaptive_rx_coalesce) &&
+		   !(test_bit(JME_FLAG_POLL, &jme->flags))) {
 		set_bit(JME_FLAG_POLL, &jme->flags);
 		jme->jme_rx = netif_receive_skb;
 		jme->jme_vlan_rx = vlan_hwaccel_receive_skb;
@@ -2533,7 +2627,11 @@ jme_smb_read(struct jme_adapter *jme, unsigned int addr)
 		val = jread32(jme, JME_SMBCSR);
 	}
 	if (!to) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_hw(jme, "SMB Bus Busy.\n");
+#else
+		netif_err(jme, hw, jme->dev, "SMB Bus Busy.\n");
+#endif
 		return 0xFF;
 	}
 
@@ -2549,7 +2647,11 @@ jme_smb_read(struct jme_adapter *jme, unsigned int addr)
 		val = jread32(jme, JME_SMBINTF);
 	}
 	if (!to) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_hw(jme, "SMB Bus Busy.\n");
+#else
+		netif_err(jme, hw, jme->dev, "SMB Bus Busy.\n");
+#endif
 		return 0xFF;
 	}
 
@@ -2569,7 +2671,11 @@ jme_smb_write(struct jme_adapter *jme, unsigned int addr, u8 data)
 		val = jread32(jme, JME_SMBCSR);
 	}
 	if (!to) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_hw(jme, "SMB Bus Busy.\n");
+#else
+		netif_err(jme, hw, jme->dev, "SMB Bus Busy.\n");
+#endif
 		return;
 	}
 
@@ -2586,7 +2692,11 @@ jme_smb_write(struct jme_adapter *jme, unsigned int addr, u8 data)
 		val = jread32(jme, JME_SMBINTF);
 	}
 	if (!to) {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 		msg_hw(jme, "SMB Bus Busy.\n");
+#else
+		netif_err(jme, hw, jme->dev, "SMB Bus Busy.\n");
+#endif
 		return;
 	}
 
@@ -2805,6 +2915,9 @@ jme_init_one(struct pci_dev *pdev,
 	netdev->change_mtu		= jme_change_mtu;
 	netdev->tx_timeout		= jme_tx_timeout;
 	netdev->vlan_rx_register	= jme_vlan_rx_register;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+	netdev->vlan_rx_kill_vid	= jme_vlan_rx_kill_vid;
+#endif
 	NETDEV_GET_STATS(netdev, &jme_get_stats);
 #endif
 	netdev->ethtool_ops		= &jme_ethtool_ops;
@@ -2860,6 +2973,7 @@ jme_init_one(struct pci_dev *pdev,
 	spin_lock_init(&jme->phy_lock);
 	spin_lock_init(&jme->macaddr_lock);
 	spin_lock_init(&jme->rxmcs_lock);
+	spin_lock_init(&jme->vlgrp_lock);
 
 	atomic_set(&jme->link_changing, 1);
 	atomic_set(&jme->rx_cleaning, 1);
@@ -2867,19 +2981,19 @@ jme_init_one(struct pci_dev *pdev,
 	atomic_set(&jme->rx_empty, 1);
 
 	tasklet_init(&jme->pcc_task,
-		     &jme_pcc_tasklet,
+		     jme_pcc_tasklet,
 		     (unsigned long) jme);
 	tasklet_init(&jme->linkch_task,
-		     &jme_link_change_tasklet,
+		     jme_link_change_tasklet,
 		     (unsigned long) jme);
 	tasklet_init(&jme->txclean_task,
-		     &jme_tx_clean_tasklet,
+		     jme_tx_clean_tasklet,
 		     (unsigned long) jme);
 	tasklet_init(&jme->rxclean_task,
-		     &jme_rx_clean_tasklet,
+		     jme_rx_clean_tasklet,
 		     (unsigned long) jme);
 	tasklet_init(&jme->rxempty_task,
-		     &jme_rx_empty_tasklet,
+		     jme_rx_empty_tasklet,
 		     (unsigned long) jme);
 	tasklet_disable_nosync(&jme->linkch_task);
 	tasklet_disable_nosync(&jme->txclean_task);
@@ -2979,6 +3093,7 @@ jme_init_one(struct pci_dev *pdev,
 		goto err_out_unmap;
 	}
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 	msg_probe(jme, "%s%s ver:%x rev:%x "
 			"macaddr: %02x:%02x:%02x:%02x:%02x:%02x\n",
 		(jme->pdev->device == PCI_DEVICE_ID_JMICRON_JMC250) ?
@@ -2994,6 +3109,16 @@ jme_init_one(struct pci_dev *pdev,
 	        netdev->dev_addr[3],
 	        netdev->dev_addr[4],
 	        netdev->dev_addr[5]);
+#else
+	netif_info(jme, probe, jme->dev, "%s%s ver:%x rev:%x macaddr:%pM\n",
+		   (jme->pdev->device == PCI_DEVICE_ID_JMICRON_JMC250) ?
+		   "JMC250 Gigabit Ethernet" :
+		   (jme->pdev->device == PCI_DEVICE_ID_JMICRON_JMC260) ?
+		   "JMC260 Fast Ethernet" : "Unknown",
+		   (jme->fpgaver != 0) ? " (FPGA)" : "",
+		   (jme->fpgaver != 0) ? jme->fpgaver : jme->chiprev,
+		   jme->rev, netdev->dev_addr);
+#endif
 
 	return 0;
 
@@ -3104,7 +3229,11 @@ jme_resume(struct pci_dev *pdev)
 }
 #endif
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,24)
 static struct pci_device_id jme_pci_tbl[] = {
+#else
+static DEFINE_PCI_DEVICE_TABLE(jme_pci_tbl) = {
+#endif
 	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMC250) },
 	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMC260) },
 	{ }
