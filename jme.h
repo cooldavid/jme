@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.5"
+#define DRV_VERSION	"0.6"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -46,13 +46,17 @@
 #define rx_dbg(args...)
 #endif
 
+#ifdef CSUM_DEBUG
+#define	csum_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#else
+#define csum_dbg(args...)
+#endif
+
 #define jprintk(devname, fmt, args...) \
         printk(KERN_INFO "%s: " fmt, devname, ## args)
 
 #define jeprintk(devname, fmt, args...) \
         printk(KERN_ERR "%s: " fmt, devname, ## args)
-
-#define USE_IEVE_SHADOW 0
 
 #define DEFAULT_MSG_ENABLE        \
 	(NETIF_MSG_DRV          | \
@@ -73,6 +77,9 @@ enum pci_conf_dcsr_mrrs_vals {
 	MRRS_4096B	= 0x50,
 };
 
+#define MAX_ETHERNET_JUMBO_PACKET_SIZE 9216
+#define MIN_ETHERNET_PACKET_SIZE 60
+
 enum dynamic_pcc_values {
 	PCC_P1		= 1,
 	PCC_P2		= 2,
@@ -87,18 +94,20 @@ enum dynamic_pcc_values {
 	PCC_P3_CNT	= 255,
 };
 struct dynpcc_info {
-	unsigned long	check_point;
 	unsigned long	last_bytes;
 	unsigned long	last_pkts;
+	unsigned long	intr_cnt;
 	unsigned char	cur;
 	unsigned char	attempt;
 	unsigned char	cnt;
 };
-#define PCC_INTERVAL (HZ / 10)
+#define PCC_INTERVAL_US	100000
+#define PCC_INTERVAL (HZ / (1000000/PCC_INTERVAL_US))
 #define PCC_P3_THRESHOLD 3*1024*1024
-#define PCC_P2_THRESHOLD 1000
-#define PCC_TX_TO 60000
-#define PCC_TX_CNT 8
+#define PCC_P2_THRESHOLD 800
+#define PCC_INTR_THRESHOLD 800
+#define PCC_TX_TO 100
+#define PCC_TX_CNT 16
 
 /*
  * TX/RX Descriptors
@@ -200,13 +209,14 @@ enum jme_rxdescwb_flags_bits {
 #define RX_RING_SIZE		(RING_DESC_NR * RX_DESC_SIZE)
 
 #define RX_BUF_DMA_ALIGN	8
-#define RX_BUF_SIZE		9216
 #define RX_PREPAD_SIZE		10
-
-/*
- * Will use mtu in the future
- */
-#define RX_BUF_ALLOC_SIZE	RX_BUF_SIZE + RX_BUF_DMA_ALIGN
+#define ETH_CRC_LEN		2
+#define RX_VLANHDR_LEN		2
+#define RX_EXTRA_LEN		(RX_PREPAD_SIZE + \
+				ETH_HLEN + \
+				ETH_CRC_LEN + \
+				RX_VLANHDR_LEN + \
+				RX_BUF_DMA_ALIGN)
 
 struct rxdesc {
 	union {
@@ -309,7 +319,7 @@ struct jme_ring {
         u16 next_to_use;
         u16 next_to_clean;
 
-	u16 nr_free;
+	atomic_t nr_free;
 };
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
@@ -336,7 +346,6 @@ struct jme_adapter {
 	struct mii_if_info	mii_if;
 	struct jme_ring		rxring[RX_RING_NR];
 	struct jme_ring		txring[TX_RING_NR];
-	spinlock_t		tx_lock;
 	spinlock_t		phy_lock;
 	spinlock_t		macaddr_lock;
 	spinlock_t		rxmcs_lock;
@@ -344,13 +353,16 @@ struct jme_adapter {
 	struct tasklet_struct	rxclean_task;
 	struct tasklet_struct	txclean_task;
 	struct tasklet_struct	linkch_task;
-	__u32			features;
+	struct tasklet_struct	pcc_task;
+	__u32			flags;
 	__u32			reg_txcs;
 	__u32			reg_txpfc;
+	__u32			reg_rxcs;
 	__u32			reg_rxmcs;
 	__u32			reg_ghc;
 	__u32			phylink;
 	__u8			mrrs;
+	unsigned int		oldmtu;
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
 	atomic_t		link_changing;
@@ -361,8 +373,8 @@ struct jme_adapter {
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
 };
-enum jme_features_bits {
-	JME_FEATURE_LALALA	= 0x00000001,
+enum jme_flags_bits {
+	JME_FLAG_MSI		= 0x00000001,
 };
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
@@ -418,6 +430,7 @@ enum jme_iomap_regs {
 	JME_SMBCSR	= JME_PHY | 0x40, /* SMB Control and Status */
 
 
+	JME_TMCSR	= JME_MISC| 0x00, /* Timer Control/Status Register */
 	JME_GPREG0	= JME_MISC| 0x08, /* General purpose REG-0 */
 	JME_GPREG1	= JME_MISC| 0x0C, /* General purpose REG-1 */
 	JME_IEVE	= JME_MISC| 0x20, /* Interrupt Event Status */
@@ -599,8 +612,7 @@ enum jme_rxcs_values {
 	RXCS_RETRYCNT_60	= 0x00000F00,
 
 	RXCS_DEFAULT		= RXCS_FIFOTHTP_128T |
-				  //RXCS_FIFOTHNP_128QW |
-				  RXCS_FIFOTHNP_32QW |
+				  RXCS_FIFOTHNP_128QW |
 				  RXCS_DMAREQSZ_128B |
 				  RXCS_RETRYGAP_256ns |
 				  RXCS_RETRYCNT_32,
@@ -697,13 +709,21 @@ enum jme_phy_link_speed_val {
 /*
  * SMB Control and Status
  */
-enum jme_smbcsr_bit_mask
-{
+enum jme_smbcsr_bit_mask {
 	SMBCSR_CNACK	= 0x00020000,
 	SMBCSR_RELOAD	= 0x00010000,
 	SMBCSR_EEPROMD	= 0x00000020,
 };
 #define JME_SMB_TIMEOUT 10 /* 10 msec */
+
+/*
+ * Timer Control/Status Register
+ */
+enum jme_tmcsr_bit_masks {
+	TMCSR_SWIT	= 0x80000000,
+	TMCSR_EN	= 0x01000000,
+	TMCSR_CNT	= 0x00FFFFFF,
+};
 
 
 /*
@@ -783,7 +803,9 @@ enum jme_interrupt_bits
 	INTR_TX1	= 0x00000002,
 	INTR_TX0	= 0x00000001,
 };
-static const __u32 INTR_ENABLE = INTR_LINKCH |
+static const __u32 INTR_ENABLE = INTR_SWINTR |
+				 INTR_TMINTR |
+				 INTR_LINKCH |
 				 INTR_RX0EMP |
 				 INTR_PCCRX0TO |
 				 INTR_PCCRX0 |
@@ -834,19 +856,19 @@ enum jme_shadow_base_address_bits {
  */
 __always_inline __u32 jread32(struct jme_adapter *jme, __u32 reg)
 {
-	return le32_to_cpu(readl(jme->regs + reg));
+	return le32_to_cpu(readl((__u8*)jme->regs + reg));
 }
 __always_inline void jwrite32(struct jme_adapter *jme, __u32 reg, __u32 val)
 {
-	writel(cpu_to_le32(val), jme->regs + reg);
+	writel(cpu_to_le32(val), (__u8*)jme->regs + reg);
 }
 __always_inline void jwrite32f(struct jme_adapter *jme, __u32 reg, __u32 val)
 {
 	/*
 	 * Read after write should cause flush
 	 */
-	writel(cpu_to_le32(val), jme->regs + reg);
-	readl(jme->regs + reg);
+	writel(cpu_to_le32(val), (__u8*)jme->regs + reg);
+	readl((__u8*)jme->regs + reg);
 }
 
 /*

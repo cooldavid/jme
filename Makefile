@@ -1,10 +1,15 @@
 
 MODNAME := jme
-TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions
-#EXTRA_CFLAGS += -Wall -DDEBUG -DTX_DEBUG -DRX_DEBUG
-#EXTRA_CFLAGS += -Wall -DDEBUG -DRX_DEBUG
-#EXTRA_CFLAGS += -Wall -DDEBUG
-EXTRA_CFLAGS += -Wall
+TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order
+
+DEBUG_FLAGS += -DDEBUG
+#DEBUG_FLAGS += -Wpointer-arith -Wbad-function-cast -Wsign-compare
+#DEBUG_FLAGS += -DCSUM_DEBUG
+#DEBUG_FLAGS += -DTX_DEBUG
+#DEBUG_FLAGS += -DRX_DEBUG
+
+EXTRA_CFLAGS += -Wall -O3
+#EXTRA_CFLAGS += $(DEBUG_FLAGS)
 
 obj-m := $(MODNAME).o
 
