@@ -25,7 +25,7 @@
 #define __JME_H_INCLUDEE__
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"1.0"
+#define DRV_VERSION	"1.0.2"
 #define PFX		DRV_NAME ": "
 
 #define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
@@ -444,7 +444,7 @@ struct jme_adapter {
 	u32			rx_ring_mask;
 	u8			mrrs;
 	unsigned int		fpgaver;
-	unsigned int		chipver;
+	unsigned int		chiprev;
 	u8			rev;
 	u32			msg_enable;
 	struct ethtool_cmd	old_ecmd;
@@ -1050,13 +1050,13 @@ enum jme_pcctx_bits {
  */
 enum jme_chipmode_bit_masks {
 	CM_FPGAVER_MASK		= 0xFFFF0000,
-	CM_CHIPVER_MASK		= 0x0000FF00,
+	CM_CHIPREV_MASK		= 0x0000FF00,
 	CM_CHIPMODE_MASK	= 0x0000000F,
 };
 
 enum jme_chipmode_shifts {
 	CM_FPGAVER_SHIFT	= 16,
-	CM_CHIPVER_SHIFT	= 8,
+	CM_CHIPREV_SHIFT	= 8,
 };
 
 /*
@@ -1112,7 +1112,7 @@ static inline void reg_dbg(const struct jme_adapter *jme,
 		const char *msg, u32 val, u32 reg)
 {
 	const char *regname;
-	switch(reg & 0xF00) {
+	switch (reg & 0xF00) {
 	case 0x000:
 		regname = MAC_REG_NAME[(reg & 0xFF) >> 2];
 		break;
@@ -1120,7 +1120,7 @@ static inline void reg_dbg(const struct jme_adapter *jme,
 		regname = PE_REG_NAME[(reg & 0xFF) >> 2];
 		break;
 	case 0x800:
-		regname = MISC_REG_NAME[(reg & 0xFF) >>2];
+		regname = MISC_REG_NAME[(reg & 0xFF) >> 2];
 		break;
 	default:
 		regname = PE_REG_NAME[0];
@@ -1177,6 +1177,14 @@ enum jme_phy_reg17_vals {
 };
 
 #define BMSR_ANCOMP               0x0020
+
+/*
+ * Workaround
+ */
+static inline int is_buggy250(unsigned short device, unsigned int chiprev)
+{
+	return device == PCI_DEVICE_ID_JMICRON_JMC250 && chiprev == 0x11;
+}
 
 /*
  * Function prototypes
