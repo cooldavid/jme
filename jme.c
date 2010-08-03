@@ -106,115 +106,6 @@ jme_mdio_write(struct net_device *netdev,
 	return;
 }
 
-static void
-jme_spi_start(struct pci_dev *pdev, struct jme_spi_op *spiop)
-{
-	spiop->sr |= SPI_EN;
-	pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-	ndelay(spiop->halfclk << 2);
-	if (spiop->mode & SPI_MODE_CPOL) {
-		spiop->sr |= SPI_SCLK;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-		ndelay(spiop->halfclk << 2);
-	}
-	spiop->sr &= ~SPI_CS;
-	pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-	ndelay(spiop->halfclk);
-}
-
-static void
-jme_spi_write(struct pci_dev *pdev, struct jme_spi_op *spiop, u8 byte)
-{
-	int bit;
-
-	for (bit = 0 ; bit < 8 ; ++bit) {
-		if (byte & 0x80)
-			spiop->sr |= SPI_MOSI;
-		else
-			spiop->sr &= ~SPI_MOSI;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-
-		byte <<= 1;
-		ndelay(spiop->halfclk);
-		spiop->sr ^= SPI_SCLK;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-
-		ndelay(spiop->halfclk);
-		spiop->sr ^= SPI_SCLK;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-	}
-}
-
-static void
-jme_spi_read(struct pci_dev *pdev, struct jme_spi_op *spiop, u8 *byte)
-{
-	int bit;
-	u8 b;
-
-	spiop->sr &= ~SPI_MOSI;
-	for (bit = 0 ; bit < 8 ; ++bit) {
-		*byte <<= 1;
-		ndelay(spiop->halfclk);
-		spiop->sr ^= SPI_SCLK;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-
-		ndelay(spiop->halfclk);
-		pci_read_config_byte(pdev, PCI_SPI, &b);
-		*byte |= !!(b & SPI_MISO);
-		spiop->sr ^= SPI_SCLK;
-		pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-	}
-}
-
-static void
-jme_spi_stop(struct pci_dev *pdev, struct jme_spi_op *spiop)
-{
-	spiop->sr &= ~SPI_EN;
-	spiop->sr |= SPI_CS;
-	pci_write_config_byte(pdev, PCI_SPI, spiop->sr);
-}
-
-/**
- * jme_spi_io - SPI Access helper function.
- * @jme: Adapter informations
- * @spiop: SPI operation.
- *
- * We have a SPI SW Access register in PCI configuration space,
- * which directly connect to flash controller with SPI interface.
- * This function is used to communicate with it in SPI protocol.
- */
-static int
-jme_spi_op(struct jme_adapter *jme, struct jme_spi_op *spiop)
-{
-	int i;
-
-	/*
-	 * Only support 8 bits for now
-	 */
-	if (spiop->bitn != 8)
-		return -EINVAL;
-
-	/*
-	 * Only support half-duplex for now
-	 */
-	if (spiop->mode & SPI_MODE_DUP)
-		return -EINVAL;
-
-	spiop->halfclk	= HALF_US / spiop->spd;
-	spiop->sr	= SPI_CS;
-	jme_spi_start(jme->pdev, spiop);
-
-	for (i = 0 ; i < spiop->wn ; ++i)
-		jme_spi_write(jme->pdev, spiop, spiop->kwbuf[i]);
-
-	for (i = 0 ; i < spiop->rn ; ++i)
-		jme_spi_read(jme->pdev, spiop, spiop->krbuf + i);
-
-	jme_spi_stop(jme->pdev, spiop);
-
-	return 0;
-}
-
 static inline void
 jme_reset_phy_processor(struct jme_adapter *jme)
 {
@@ -2146,48 +2037,6 @@ jme_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
-static int
-jme_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
-{
-	struct jme_adapter *jme = netdev_priv(netdev);
-	struct jme_spi_op spiop;
-	int rc;
-
-	switch (cmd) {
-	case JMESPIIOCTL:
-		if (!capable(CAP_NET_ADMIN))
-			return -EPERM;
-
-		copy_from_user(&spiop, ifr->ifr_data,
-				sizeof(struct jme_spi_op));
-		spiop.kwbuf = kmalloc(spiop.wn, GFP_KERNEL);
-		if (!spiop.kwbuf) {
-			rc = -ENOMEM;
-			goto out;
-		}
-		spiop.krbuf = kmalloc(spiop.rn, GFP_KERNEL);
-		if (!spiop.krbuf) {
-			rc = -ENOMEM;
-			goto out_free1;
-		}
-		copy_from_user(spiop.kwbuf, spiop.uwbuf, spiop.wn);
-		rc = jme_spi_op(jme, &spiop);
-		if (rc)
-			goto out_free;
-		copy_to_user(spiop.urbuf, spiop.krbuf, spiop.rn);
-out_free:
-		kfree(spiop.krbuf);
-out_free1:
-		kfree(spiop.kwbuf);
-out:
-		return rc;
-	default:
-		break;
-	}
-
-	return -EOPNOTSUPP;
-}
-
 static void
 jme_tx_timeout(struct net_device *netdev)
 {
@@ -2816,7 +2665,6 @@ jme_init_one(struct pci_dev *pdev,
 	netdev->set_mac_address		= jme_set_macaddr;
 	netdev->set_multicast_list	= jme_set_multi;
 	netdev->change_mtu		= jme_change_mtu;
-	netdev->do_ioctl		= jme_ioctl;
 	netdev->ethtool_ops		= &jme_ethtool_ops;
 	netdev->tx_timeout		= jme_tx_timeout;
 	netdev->watchdog_timeo		= TX_TIMEOUT;
