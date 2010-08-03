@@ -190,7 +190,7 @@ jme_reset_mac_processor(struct jme_adapter *jme)
 	else
 		gpreg0 = GPREG0_DEFAULT;
 	jwrite32(jme, JME_GPREG0, gpreg0);
-	jwrite32(jme, JME_GPREG1, 0);
+	jwrite32(jme, JME_GPREG1, GPREG1_DEFAULT);
 }
 
 static inline void
@@ -365,7 +365,7 @@ static int
 jme_check_link(struct net_device *netdev, int testonly)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
-	u32 phylink, ghc, cnt = JME_SPDRSV_TIMEOUT, bmcr;
+	u32 phylink, ghc, cnt = JME_SPDRSV_TIMEOUT, bmcr, gpreg1;
 	char linkmsg[64];
 	int rc = 0;
 
@@ -437,37 +437,22 @@ jme_check_link(struct net_device *netdev, int testonly)
 		case PHY_LINK_SPEED_10M:
 			ghc |= GHC_SPEED_10M;
 			strcat(linkmsg, "10 Mbps, ");
-			if (is_buggy250(jme->pdev->device, jme->chiprev))
-				jme_set_phyfifoa(jme);
 			break;
 		case PHY_LINK_SPEED_100M:
 			ghc |= GHC_SPEED_100M;
 			strcat(linkmsg, "100 Mbps, ");
-			if (is_buggy250(jme->pdev->device, jme->chiprev))
-				jme_set_phyfifob(jme);
 			break;
 		case PHY_LINK_SPEED_1000M:
 			ghc |= GHC_SPEED_1000M;
 			strcat(linkmsg, "1000 Mbps, ");
-			if (is_buggy250(jme->pdev->device, jme->chiprev))
-				jme_set_phyfifoa(jme);
 			break;
 		default:
 			break;
 		}
-		ghc |= (phylink & PHY_LINK_DUPLEX) ? GHC_DPX : 0;
-
-		strcat(linkmsg, (phylink & PHY_LINK_DUPLEX) ?
-					"Full-Duplex, " :
-					"Half-Duplex, ");
-
-		if (phylink & PHY_LINK_MDI_STAT)
-			strcat(linkmsg, "MDI-X");
-		else
-			strcat(linkmsg, "MDI");
 
 		if (phylink & PHY_LINK_DUPLEX) {
 			jwrite32(jme, JME_TXMCS, TXMCS_DEFAULT);
+			ghc |= GHC_DPX;
 		} else {
 			jwrite32(jme, JME_TXMCS, TXMCS_DEFAULT |
 						TXMCS_BACKOFF |
@@ -478,6 +463,36 @@ jme_check_link(struct net_device *netdev, int testonly)
 				TXTRHD_TXREN |
 				((8 << TXTRHD_TXRL_SHIFT) & TXTRHD_TXRL));
 		}
+		strcat(linkmsg, (phylink & PHY_LINK_DUPLEX) ?
+					"Full-Duplex, " :
+					"Half-Duplex, ");
+
+		if (phylink & PHY_LINK_MDI_STAT)
+			strcat(linkmsg, "MDI-X");
+		else
+			strcat(linkmsg, "MDI");
+
+		gpreg1 = GPREG1_DEFAULT;
+		if (is_buggy250(jme->pdev->device, jme->chiprev)) {
+			if (!(phylink & PHY_LINK_DUPLEX))
+				gpreg1 |= GPREG1_HALFMODEPATCH;
+			switch (phylink & PHY_LINK_SPEED_MASK) {
+			case PHY_LINK_SPEED_10M:
+				jme_set_phyfifoa(jme);
+				gpreg1 |= GPREG1_RSSPATCH;
+				break;
+			case PHY_LINK_SPEED_100M:
+				jme_set_phyfifob(jme);
+				gpreg1 |= GPREG1_RSSPATCH;
+				break;
+			case PHY_LINK_SPEED_1000M:
+				jme_set_phyfifoa(jme);
+				break;
+			default:
+				break;
+			}
+		}
+		jwrite32(jme, JME_GPREG1, gpreg1);
 
 		jme->reg_ghc = ghc;
 		jwrite32(jme, JME_GHC, ghc);
@@ -1448,7 +1463,7 @@ jme_intr(int irq, void *dev_id)
 	/*
 	 * Check if it's really an interrupt for us
 	 */
-	if (unlikely(intrstat == 0))
+	if (unlikely((intrstat & INTR_ENABLE) == 0))
 		return IRQ_NONE;
 
 	/*
@@ -1578,6 +1593,7 @@ err_out:
 	return rc;
 }
 
+#ifdef CONFIG_PM
 static void
 jme_set_100m_half(struct jme_adapter *jme)
 {
@@ -1610,6 +1626,7 @@ jme_wait_link(struct jme_adapter *jme)
 		phylink = jme_linkstat_from_phy(jme);
 	}
 }
+#endif
 
 static inline void
 jme_phy_off(struct jme_adapter *jme)
@@ -2897,6 +2914,7 @@ jme_remove_one(struct pci_dev *pdev)
 
 }
 
+#ifdef CONFIG_PM
 static int
 jme_suspend(struct pci_dev *pdev, pm_message_t state)
 {
@@ -2976,6 +2994,7 @@ jme_resume(struct pci_dev *pdev)
 
 	return 0;
 }
+#endif
 
 static struct pci_device_id jme_pci_tbl[] = {
 	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMC250) },

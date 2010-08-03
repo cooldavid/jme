@@ -25,7 +25,7 @@
 #define __JME_H_INCLUDEE__
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"1.0.2"
+#define DRV_VERSION	"1.0.3"
 #define PFX		DRV_NAME ": "
 
 #define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
@@ -964,6 +964,36 @@ enum jme_gpreg0_vals {
 };
 
 /*
+ * General Purpose REG-1
+ * Note: All theses bits defined here are for
+ *       Chip mode revision 0x11 only
+ */
+enum jme_gpreg1_masks {
+	GPREG1_INTRDELAYUNIT	= 0x00000018,
+	GPREG1_INTRDELAYENABLE	= 0x00000007,
+};
+
+enum jme_gpreg1_vals {
+	GPREG1_RSSPATCH		= 0x00000040,
+	GPREG1_HALFMODEPATCH	= 0x00000020,
+
+	GPREG1_INTDLYUNIT_16NS	= 0x00000000,
+	GPREG1_INTDLYUNIT_256NS	= 0x00000008,
+	GPREG1_INTDLYUNIT_1US	= 0x00000010,
+	GPREG1_INTDLYUNIT_16US	= 0x00000018,
+
+	GPREG1_INTDLYEN_1U	= 0x00000001,
+	GPREG1_INTDLYEN_2U	= 0x00000002,
+	GPREG1_INTDLYEN_3U	= 0x00000003,
+	GPREG1_INTDLYEN_4U	= 0x00000004,
+	GPREG1_INTDLYEN_5U	= 0x00000005,
+	GPREG1_INTDLYEN_6U	= 0x00000006,
+	GPREG1_INTDLYEN_7U	= 0x00000007,
+
+	GPREG1_DEFAULT		= 0x00000000,
+};
+
+/*
  * Interrupt Status Bits
  */
 enum jme_interrupt_bits {
@@ -1092,12 +1122,14 @@ static char *MAC_REG_NAME[] = {
 	"JME_RXMCHT_LO", "JME_RXMCHT_HI", "JME_WFODP",    "JME_WFOI",
 	"JME_SMI",       "JME_GHC",       "UNKNOWN",      "UNKNOWN",
 	"JME_PMCS"};
+
 static char *PE_REG_NAME[] = {
 	"UNKNOWN",      "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
 	"UNKNOWN",      "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
 	"UNKNOWN",      "UNKNOWN",     "JME_PHY_CS", "UNKNOWN",
 	"JME_PHY_LINK", "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
 	"JME_SMBCSR",   "JME_SMBINTF"};
+
 static char *MISC_REG_NAME[] = {
 	"JME_TMCSR",  "JME_GPIO",     "JME_GPREG0",  "JME_GPREG1",
 	"JME_IEVE",   "JME_IREQ",     "JME_IENS",    "JME_IENC",
@@ -1108,6 +1140,7 @@ static char *MISC_REG_NAME[] = {
 	"UNKNOWN",    "UNKNOWN",      "UNKNOWN",     "UNKNOWN",
 	"JME_TIMER1", "JME_TIMER2",   "UNKNOWN",     "JME_APMC",
 	"JME_PCCSRX0"};
+
 static inline void reg_dbg(const struct jme_adapter *jme,
 		const char *msg, u32 val, u32 reg)
 {
