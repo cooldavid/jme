@@ -1,6 +1,6 @@
 
 MODNAME := jme
-TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order
+TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order Module.markers Modules.symvers
 
 EXTRA_CFLAGS += -Wall -O3
 #EXTRA_CFLAGS += -DTX_DEBUG
@@ -29,7 +29,7 @@ namespacecheck:
 	@rm -rf $(TEMPFILES)
 
 patch:
-	@/usr/bin/diff -uarN -X dontdiff ../mod ./ > bc.patch || echo > /dev/null
+	@/usr/bin/diff -uar -X dontdiff ../../trunc ./ > bc.patch || echo > /dev/null
 
 clean:
 	@rm -rf $(MODNAME).ko $(TEMPFILES)
