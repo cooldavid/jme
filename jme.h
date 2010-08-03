@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.7"
+#define DRV_VERSION	"0.8"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -371,6 +371,7 @@ struct jme_adapter {
 	__u8			mrrs;
 	struct ethtool_cmd	old_ecmd;
 	unsigned int		old_mtu;
+	struct vlan_group*	vlgrp;
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
 	atomic_t		link_changing;

@@ -33,8 +33,6 @@
 /*
  * Timeline before release:
  * 	Stage 5: Advanced offloading support.
- * 	0.8:
- * 	-  Implement VLAN offloading.
  * 	0.9:
  *	-  Implement scatter-gather offloading.
  *	   Use pci_map_page on scattered sk_buff for HIGHMEM support
@@ -73,6 +71,7 @@
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/if_vlan.h>
 #include "jme.h"
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
@@ -179,7 +178,7 @@ jme_clear_pm(struct jme_adapter *jme)
 {
 	jwrite32(jme, JME_PMCS, 0xFFFF0000 | jme->reg_pmcs);
 	pci_set_power_state(jme->pdev, PCI_D0);
-	pci_enable_wake(jme->pdev, PCI_D0, 0);
+	pci_enable_wake(jme->pdev, PCI_D0, false);
 }
 
 static int
@@ -485,6 +484,15 @@ jme_tx_csum(struct sk_buff *skb, unsigned mtu, __u8 *flags)
 	}
 }
 
+__always_inline static void
+jme_tx_vlan(struct sk_buff *skb, volatile __u16 *vlan, __u8 *flags)
+{
+	if(vlan_tx_tag_present(skb)) {
+		*flags |= TXFLAG_TAGON;
+		*vlan = vlan_tx_tag_get(skb);
+	}
+}
+
 static int
 jme_set_new_txdesc(struct jme_adapter *jme,
 			struct sk_buff *skb)
@@ -548,6 +556,7 @@ jme_set_new_txdesc(struct jme_adapter *jme,
 	wmb();
 	flags = TXFLAG_OWN | TXFLAG_INT; 
 	jme_tx_csum(skb, jme->dev->mtu, &flags);
+	jme_tx_vlan(skb, &(ctxdesc->desc1.vlan), &flags);
 	ctxdesc->desc1.flags = flags;
 	/*
 	 * Set tx buffer info after telling NIC to send
@@ -910,7 +919,7 @@ jme_disable_rx_engine(struct jme_adapter *jme)
 }
 
 static void
-jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx, int summed)
+jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 {
 	struct jme_ring *rxring = &(jme->rxring[0]);
 	volatile struct rxdesc *rxdesc = rxring->desc;
@@ -943,12 +952,19 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx, int summed)
 		skb_put(skb, framesize);
 		skb->protocol = eth_type_trans(skb, jme->dev);
 
-		if(summed)
+		if((rxdesc->descwb.flags &
+					(RXWBFLAG_TCPON |
+					RXWBFLAG_UDPON |
+					RXWBFLAG_IPV4)))
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		else
 			skb->ip_summed = CHECKSUM_NONE;
 
-		netif_rx(skb);
+		if(jme->vlgrp && (rxdesc->descwb.flags & RXWBFLAG_TAGON))
+			vlan_hwaccel_rx(skb, jme->vlgrp,
+					le32_to_cpu(rxdesc->descwb.vlan));
+		else
+			netif_rx(skb);
 
 		if(le16_to_cpu(rxdesc->descwb.flags) & RXWBFLAG_DEST_MUL)
 			++(NET_STAT(jme).multicast);
@@ -1034,11 +1050,7 @@ jme_process_receive(struct jme_adapter *jme, int limit)
 
 		}
 		else {
-			jme_alloc_and_feed_skb(jme, i,
-				(rxdesc->descwb.flags &
-					(RXWBFLAG_TCPON |
-					RXWBFLAG_UDPON |
-					RXWBFLAG_IPV4)));
+			jme_alloc_and_feed_skb(jme, i);
 		}
 
 		if((i += desccnt) >= RING_DESC_NR)
@@ -1203,7 +1215,7 @@ jme_rx_clean_tasklet(unsigned long arg)
 
 	if(unlikely(!atomic_dec_and_test(&jme->rx_cleaning)))
 		goto out;
-	
+
 	if(unlikely(atomic_read(&jme->link_changing) != 1))
 		goto out;
 
@@ -1418,7 +1430,6 @@ jme_msi(int irq, void *dev_id)
 static void
 jme_reset_link(struct jme_adapter *jme)
 {
-	jme->phylink = 0;
 	jwrite32(jme, JME_TMCSR, TMCSR_SWIT);
 }
 
@@ -1500,6 +1511,7 @@ jme_open(struct net_device *netdev)
 		goto err_out;
 	}
 
+	jme_clear_pm(jme);
 	jme_reset_mac_processor(jme);
 
 	rc = jme_request_irq(jme);
@@ -1508,6 +1520,12 @@ jme_open(struct net_device *netdev)
 
 	jme_enable_shadow(jme);
 	jme_start_irq(jme);
+
+	if(jme->flags & JME_FLAG_SSET)
+		jme_set_settings(netdev, &jme->old_ecmd);
+	else
+		jme_reset_phy_processor(jme);
+
 	jme_reset_link(jme);
 
 	return 0;
@@ -1517,6 +1535,29 @@ err_out:
 	netif_carrier_off(netdev);
 	return rc;
 }
+
+static void
+jme_set_100m_half(struct jme_adapter *jme)
+{
+	__u32 bmcr, tmp;
+
+	bmcr = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_BMCR);
+	tmp = bmcr & ~(BMCR_ANENABLE | BMCR_SPEED100 |
+		       BMCR_SPEED1000 | BMCR_FULLDPLX);
+	tmp |= BMCR_SPEED100;
+
+	if (bmcr != tmp)
+		jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_BMCR, tmp);
+
+	jwrite32(jme, JME_GHC, GHC_SPEED_100M);
+}
+
+static void
+jme_phy_off(struct jme_adapter *jme)
+{
+	jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_BMCR, BMCR_PDOWN);
+}
+
 
 static int
 jme_close(struct net_device *netdev)
@@ -1538,6 +1579,18 @@ jme_close(struct net_device *netdev)
 	jme_reset_mac_processor(jme);
 	jme_free_rx_resources(jme);
 	jme_free_tx_resources(jme);
+	jme->phylink = 0;
+
+	if(jme->reg_pmcs) {
+		jme_set_100m_half(jme);
+		pci_enable_wake(jme->pdev, PCI_D0, true);
+		pci_enable_wake(jme->pdev, PCI_D3hot, true);
+		pci_enable_wake(jme->pdev, PCI_D3cold, true);
+		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
+	}
+	else {
+		jme_phy_off(jme);
+	}
 
 	return 0;
 }
@@ -1654,7 +1707,7 @@ jme_change_mtu(struct net_device *netdev, int new_mtu)
 		return 0;
 
         if (((new_mtu + ETH_HLEN) > MAX_ETHERNET_JUMBO_PACKET_SIZE) ||
-                ((new_mtu + ETH_HLEN) < MIN_ETHERNET_PACKET_SIZE))
+                ((new_mtu) < IPV6_MIN_MTU))
                 return -EINVAL;
 
 	if(new_mtu > 4000) {
@@ -1690,7 +1743,16 @@ jme_tx_timeout(struct net_device *netdev)
 	 * Reset the link
 	 * And the link change will reinitiallize all RX/TX resources
 	 */
+	jme->phylink = 0;
 	jme_reset_link(jme);
+}
+
+static void
+jme_vlan_rx_register(struct net_device *netdev, struct vlan_group *grp)
+{
+	struct jme_adapter *jme = netdev_priv(netdev);
+
+	jme->vlgrp = grp;
 }
 
 static void
@@ -1916,6 +1978,7 @@ jme_set_wol(struct net_device *netdev,
 	if(wol->wolopts & WAKE_MAGIC)
 		jme->reg_pmcs |= PMCS_MFEN;
 
+
 	return 0;
 }
  
@@ -1999,7 +2062,7 @@ jme_set_rx_csum(struct net_device *netdev, u32 on)
 static int
 jme_set_tx_csum(struct net_device *netdev, u32 on)
 {
-	if(on)
+	if(on && netdev->mtu <= 1900)
 		netdev->features |= NETIF_F_HW_CSUM;
 	else
 		netdev->features &= ~NETIF_F_HW_CSUM;
@@ -2038,18 +2101,30 @@ static int
 jme_pci_dma64(struct pci_dev *pdev)
 {
         if (!pci_set_dma_mask(pdev, DMA_64BIT_MASK))
-                if(!pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK))
+                if(!pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK)) {
+		    	dprintk("jme", "64Bit DMA Selected.\n");
 			return 1;
+		}
 
         if (!pci_set_dma_mask(pdev, DMA_40BIT_MASK))
-                if(!pci_set_consistent_dma_mask(pdev, DMA_40BIT_MASK))
+                if(!pci_set_consistent_dma_mask(pdev, DMA_40BIT_MASK)) {
+		    	dprintk("jme", "40Bit DMA Selected.\n");
 			return 1;
+		}
 
         if (!pci_set_dma_mask(pdev, DMA_32BIT_MASK))
-                if(!pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK))
+                if(!pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
+		    	dprintk("jme", "32Bit DMA Selected.\n");
 			return 0;
+		}
 
 	return -1;
+}
+
+__always_inline static void
+jme_set_phy_ps(struct jme_adapter *jme)
+{
+	jme_mdio_write(jme->dev, jme->mii_if.phy_id, 26, 0x00001000);
 }
 
 static int __devinit
@@ -2095,6 +2170,7 @@ jme_init_one(struct pci_dev *pdev,
 	 */
 	netdev = alloc_etherdev(sizeof(*jme));
 	if(!netdev) {
+		printk(KERN_ERR PFX "Cannot allocate netdev structure.\n");
 		rc = -ENOMEM;
 		goto err_out_release_regions;
 	}
@@ -2107,8 +2183,11 @@ jme_init_one(struct pci_dev *pdev,
 	netdev->ethtool_ops		= &jme_ethtool_ops;
 	netdev->tx_timeout		= jme_tx_timeout;
 	netdev->watchdog_timeo		= TX_TIMEOUT;
+	netdev->vlan_rx_register	= jme_vlan_rx_register;
 	NETDEV_GET_STATS(netdev, &jme_get_stats);
-	netdev->features		=	NETIF_F_HW_CSUM;
+	netdev->features		=	NETIF_F_HW_CSUM |
+						NETIF_F_HW_VLAN_TX |
+						NETIF_F_HW_VLAN_RX;
 	if(using_dac)
 		netdev->features	|=	NETIF_F_HIGHDMA;
 
@@ -2126,6 +2205,7 @@ jme_init_one(struct pci_dev *pdev,
 	jme->regs = ioremap(pci_resource_start(pdev, 0),
 			     pci_resource_len(pdev, 0));
 	if (!(jme->regs)) {
+		printk(KERN_ERR PFX "Mapping PCI resource region error.\n");
 		rc = -ENOMEM;
 		goto err_out_free_netdev;
 	}
@@ -2133,6 +2213,7 @@ jme_init_one(struct pci_dev *pdev,
 					        sizeof(__u32) * SHADOW_REG_NR,
 					        &(jme->shadow_dma));
 	if (!(jme->shadow_regs)) {
+		printk(KERN_ERR PFX "Allocating shadow register mapping error.\n");
 		rc = -ENOMEM;
 		goto err_out_unmap;
 	}
@@ -2194,7 +2275,8 @@ jme_init_one(struct pci_dev *pdev,
 	 * Reset MAC processor and reload EEPROM for MAC Address
 	 */
 	jme_clear_pm(jme);
-	jme_reset_phy_processor(jme);
+	jme_set_phy_ps(jme);
+	jme_phy_off(jme);
 	jme_reset_mac_processor(jme);
 	rc = jme_reload_eeprom(jme);
 	if(rc) {
@@ -2268,21 +2350,6 @@ jme_remove_one(struct pci_dev *pdev)
 
 }
 
-static void
-jme_set_10m_half(struct jme_adapter *jme)
-{
-	__u32 bmcr, tmp;
-
-	bmcr = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_BMCR);
-	tmp = bmcr & ~(BMCR_ANENABLE | BMCR_SPEED100 |
-		       BMCR_SPEED1000 | BMCR_FULLDPLX);
-
-	if (bmcr != tmp)
-		jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_BMCR, tmp);
-
-	jwrite32(jme, JME_GHC, GHC_SPEED_10M);
-}
-
 static int
 jme_suspend(struct pci_dev *pdev, pm_message_t state)
 {
@@ -2319,15 +2386,18 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 		jme->phylink = 0;
 	}
 
-	jme_set_10m_half(jme);
 
 	pci_save_state(pdev);
 	if(jme->reg_pmcs) {
+		jme_set_100m_half(jme);
 		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
-		pci_enable_wake(pdev, PCI_D3cold, 1);
+		pci_enable_wake(pdev, PCI_D3hot, true);
+		pci_enable_wake(pdev, PCI_D3cold, true);
 	}
 	else {
-		pci_enable_wake(pdev, PCI_D3cold, 0);
+		jme_phy_off(jme);
+		pci_enable_wake(pdev, PCI_D3hot, false);
+		pci_enable_wake(pdev, PCI_D3cold, false);
 	}
 	pci_set_power_state(pdev, pci_choose_state(pdev, state));
 
