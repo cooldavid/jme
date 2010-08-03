@@ -2,16 +2,9 @@
 MODNAME := jme
 TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order
 
-DEBUG_FLAGS += -DDEBUG
-#DEBUG_FLAGS += -DQUEUE_DEBUG
-#DEBUG_FLAGS += -DVLAN_DEBUG
-#DEBUG_FLAGS += -DCSUM_DEBUG
-#DEBUG_FLAGS += -DTX_DEBUG
-#DEBUG_FLAGS += -DRX_DEBUG
-#DEBUG_FLAGS += -Wpointer-arith -Wbad-function-cast -Wsign-compare
-
 EXTRA_CFLAGS += -Wall -O3
-#EXTRA_CFLAGS += $(DEBUG_FLAGS)
+#EXTRA_CFLAGS += -DTX_DEBUG
+#EXTRA_CFLAGS += -DREG_DEBUG
 
 obj-m := $(MODNAME).o
 
@@ -19,10 +12,20 @@ ifeq (,$(BUILD_KERNEL))
 BUILD_KERNEL=$(shell uname -r)
 endif
 
-KSRC := /lib/modules/$(BUILD_KERNEL)/build
+KSRC ?= /lib/modules/$(BUILD_KERNEL)/build
 
 all:
 	@$(MAKE) -C $(KSRC) SUBDIRS=$(shell pwd) modules
+	@rm -rf $(TEMPFILES)
+
+checkstack:
+	$(MAKE) -C $(KSRC) SUBDIRS=$(shell pwd) modules
+	objdump -d $(obj-m) | perl $(KSRC)/scripts/checkstack.pl i386
+	@rm -rf $(TEMPFILES)
+
+namespacecheck:
+	$(MAKE) -C $(KSRC) SUBDIRS=$(shell pwd) modules
+	perl $(KSRC)/scripts/namespace.pl
 	@rm -rf $(TEMPFILES)
 
 clean:

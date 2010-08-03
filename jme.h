@@ -21,69 +21,74 @@
  *
  */
 
-#include <linux/version.h>
+#ifndef __JME_H_INCLUDED__
+#define __JME_H_INCLUDEE__
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.9e"
-#define PFX DRV_NAME	": "
+#define DRV_VERSION	"1.0"
+#define PFX		DRV_NAME ": "
 
-#define JME_GE_DEVICE 0x250
-#define JME_FE_DEVICE 0x260
+#define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
+#define PCI_DEVICE_ID_JMICRON_JMC260	0x0260
 
-#ifdef DEBUG
-#define dprintk(devname, fmt, args...) \
-        printk(KERN_DEBUG "%s: " fmt, devname, ## args)
-#else
-#define dprintk(devname, fmt, args...)
-#endif
+/*
+ * Message related definitions
+ */
+#define JME_DEF_MSG_ENABLE \
+	(NETIF_MSG_PROBE | \
+	NETIF_MSG_LINK | \
+	NETIF_MSG_RX_ERR | \
+	NETIF_MSG_TX_ERR | \
+	NETIF_MSG_HW)
+
+#define jeprintk(pdev, fmt, args...) \
+	printk(KERN_ERR PFX fmt, ## args)
 
 #ifdef TX_DEBUG
-#define	tx_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#define tx_dbg(priv, fmt, args...) \
+	printk(KERN_DEBUG "%s: " fmt, (priv)->dev->name, ## args)
 #else
-#define tx_dbg(args...)
+#define tx_dbg(priv, fmt, args...)
 #endif
 
-#ifdef RX_DEBUG
-#define	rx_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
-#else
-#define rx_dbg(args...)
-#endif
+#define jme_msg(msglvl, type, priv, fmt, args...) \
+	if (netif_msg_##type(priv)) \
+		printk(msglvl "%s: " fmt, (priv)->dev->name, ## args)
 
-#ifdef QUEUE_DEBUG
-#define	queue_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
-#else
-#define queue_dbg(args...)
-#endif
+#define msg_probe(priv, fmt, args...) \
+	jme_msg(KERN_INFO, probe, priv, fmt, ## args)
 
-#ifdef CSUM_DEBUG
-#define	csum_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
-#else
-#define csum_dbg(args...)
-#endif
+#define msg_link(priv, fmt, args...) \
+	jme_msg(KERN_INFO, link, priv, fmt, ## args)
 
-#ifdef VLAN_DEBUG
-#define	vlan_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
-#else
-#define vlan_dbg(args...)
-#endif
+#define msg_intr(priv, fmt, args...) \
+	jme_msg(KERN_INFO, intr, priv, fmt, ## args)
 
-#define jprintk(devname, fmt, args...) \
-        printk(KERN_INFO "%s: " fmt, devname, ## args)
+#define msg_rx_err(priv, fmt, args...) \
+	jme_msg(KERN_ERR, rx_err, priv, fmt, ## args)
 
-#define jeprintk(devname, fmt, args...) \
-        printk(KERN_ERR "%s: " fmt, devname, ## args)
+#define msg_rx_status(priv, fmt, args...) \
+	jme_msg(KERN_INFO, rx_status, priv, fmt, ## args)
 
-#define DEFAULT_MSG_ENABLE        \
-	(NETIF_MSG_DRV          | \
-	 NETIF_MSG_PROBE        | \
-	 NETIF_MSG_LINK         | \
-	 NETIF_MSG_TIMER        | \
-	 NETIF_MSG_RX_ERR       | \
-	 NETIF_MSG_TX_ERR)
+#define msg_tx_err(priv, fmt, args...) \
+	jme_msg(KERN_ERR, tx_err, priv, fmt, ## args)
 
-#define PCI_CONF_DCSR_MRRS	0x59
-#define PCI_CONF_DCSR_MRRS_MASK 0x70
-enum pci_conf_dcsr_mrrs_vals {
+#define msg_tx_done(priv, fmt, args...) \
+	jme_msg(KERN_INFO, tx_done, priv, fmt, ## args)
+
+#define msg_tx_queued(priv, fmt, args...) \
+	jme_msg(KERN_INFO, tx_queued, priv, fmt, ## args)
+
+#define msg_hw(priv, fmt, args...) \
+	jme_msg(KERN_ERR, hw, priv, fmt, ## args)
+
+/*
+ * Extra PCI Configuration space interface
+ */
+#define PCI_DCSR_MRRS		0x59
+#define PCI_DCSR_MRRS_MASK	0x70
+
+enum pci_dcsr_mrrs_vals {
 	MRRS_128B	= 0x00,
 	MRRS_256B	= 0x10,
 	MRRS_512B	= 0x20,
@@ -92,9 +97,44 @@ enum pci_conf_dcsr_mrrs_vals {
 	MRRS_4096B	= 0x50,
 };
 
-#define MAX_ETHERNET_JUMBO_PACKET_SIZE 9216
-#define MIN_ETHERNET_PACKET_SIZE 60
+#define PCI_SPI			0xB0
 
+enum pci_spi_bits {
+	SPI_EN		= 0x10,
+	SPI_MISO	= 0x08,
+	SPI_MOSI	= 0x04,
+	SPI_SCLK	= 0x02,
+	SPI_CS		= 0x01,
+};
+
+struct jme_spi_op {
+	void __user *uwbuf;
+	void __user *urbuf;
+	__u8	wn;	/* Number of write actions */
+	__u8	rn;	/* Number of read actions */
+	__u8	bitn;	/* Number of bits per action */
+	__u8	spd;	/* The maxim acceptable speed of controller, in MHz.*/
+	__u8	mode;	/* CPOL, CPHA, and Duplex mode of SPI */
+
+	/* Internal use only */
+	u8	*kwbuf;
+	u8	*krbuf;
+	u8	sr;
+	u16	halfclk; /* Half of clock cycle calculated from spd, in ns */
+};
+
+enum jme_spi_op_bits {
+	SPI_MODE_CPHA	= 0x01,
+	SPI_MODE_CPOL	= 0x02,
+	SPI_MODE_DUP	= 0x80,
+};
+
+#define HALF_US 500	/* 500 ns */
+#define JMESPIIOCTL	SIOCDEVPRIVATE
+
+/*
+ * Dynamic(adaptive)/Static PCC values
+ */
 enum dynamic_pcc_values {
 	PCC_OFF		= 0,
 	PCC_P1		= 1,
@@ -120,8 +160,8 @@ struct dynpcc_info {
 	unsigned char	cnt;
 };
 #define PCC_INTERVAL_US	100000
-#define PCC_INTERVAL (HZ / (1000000/PCC_INTERVAL_US))
-#define PCC_P3_THRESHOLD 2*1024*1024
+#define PCC_INTERVAL (HZ / (1000000 / PCC_INTERVAL_US))
+#define PCC_P3_THRESHOLD (2 * 1024 * 1024)
 #define PCC_P2_THRESHOLD 800
 #define PCC_INTR_THRESHOLD 800
 #define PCC_TX_TO 1000
@@ -130,72 +170,71 @@ struct dynpcc_info {
 /*
  * TX/RX Descriptors
  *
- * TX/RX Ring DESC Count Must be multiple of 16
- * RX Ring DESC Count Must be <= 1024
+ * TX/RX Ring DESC Count Must be multiple of 16 and <= 1024
  */
 #define RING_DESC_ALIGN		16	/* Descriptor alignment */
-
 #define TX_DESC_SIZE		16
 #define TX_RING_NR		8
-#define TX_RING_ALLOC_SIZE(s)	(s * TX_DESC_SIZE) + RING_DESC_ALIGN
+#define TX_RING_ALLOC_SIZE(s)	((s * TX_DESC_SIZE) + RING_DESC_ALIGN)
 
 struct txdesc {
 	union {
-		__u8  all[16];
-		__u32 dw[4];
+		__u8	all[16];
+		__le32	dw[4];
 		struct {
 			/* DW0 */
-			__u16 vlan;
-			__u8 rsv1;
-			__u8 flags;
+			__le16	vlan;
+			__u8	rsv1;
+			__u8	flags;
 
 			/* DW1 */
-			__u16 datalen;
-			__u16 mss;
+			__le16	datalen;
+			__le16	mss;
 
 			/* DW2 */
-			__u16 pktsize;
-			__u16 rsv2;
+			__le16	pktsize;
+			__le16	rsv2;
 
 			/* DW3 */
-			__u32 bufaddr;
+			__le32	bufaddr;
 		} desc1;
 		struct {
 			/* DW0 */
-			__u16 rsv1;
-			__u8 rsv2;
-			__u8 flags;
+			__le16	rsv1;
+			__u8	rsv2;
+			__u8	flags;
 
 			/* DW1 */
-			__u16 datalen;
-			__u16 rsv3;
+			__le16	datalen;
+			__le16	rsv3;
 
 			/* DW2 */
-			__u32 bufaddrh;
+			__le32	bufaddrh;
 
 			/* DW3 */
-			__u32 bufaddrl;
+			__le32	bufaddrl;
 		} desc2;
 		struct {
 			/* DW0 */
-			__u8 ehdrsz;
-			__u8 rsv1;
-			__u8 rsv2;
-			__u8 flags;
+			__u8	ehdrsz;
+			__u8	rsv1;
+			__u8	rsv2;
+			__u8	flags;
 
 			/* DW1 */
-			__u16 trycnt;
-			__u16 segcnt;
+			__le16	trycnt;
+			__le16	segcnt;
 
 			/* DW2 */
-			__u16 pktsz;
-			__u16 rsv3;
+			__le16	pktsz;
+			__le16	rsv3;
 
 			/* DW3 */
-			__u32 bufaddrl;
+			__le32	bufaddrl;
 		} descwb;
 	};
 };
+
 enum jme_txdesc_flags_bits {
 	TXFLAG_OWN	= 0x80,
 	TXFLAG_INT	= 0x40,
@@ -206,6 +245,7 @@ enum jme_txdesc_flags_bits {
 	TXFLAG_LSEN	= 0x02,
 	TXFLAG_TAGON	= 0x01,
 };
+
 #define TXDESC_MSS_SHIFT	2
 enum jme_rxdescwb_flags_bits {
 	TXWBFLAG_OWN	= 0x80,
@@ -219,11 +259,9 @@ enum jme_rxdescwb_flags_bits {
 			  TXWBFLAG_COL,
 };
 
-
 #define RX_DESC_SIZE		16
 #define RX_RING_NR		4
-#define RX_RING_ALLOC_SIZE(s)	(s * RX_DESC_SIZE) + RING_DESC_ALIGN
-
+#define RX_RING_ALLOC_SIZE(s)	((s * RX_DESC_SIZE) + RING_DESC_ALIGN)
 #define RX_BUF_DMA_ALIGN	8
 #define RX_PREPAD_SIZE		10
 #define ETH_CRC_LEN		2
@@ -236,49 +274,51 @@ enum jme_rxdescwb_flags_bits {
 
 struct rxdesc {
 	union {
-		__u8   all[16];
-		__le32 dw[4];
+		__u8	all[16];
+		__le32	dw[4];
 		struct {
 			/* DW0 */
-			__le16 rsv2;
-			__u8 rsv1;
-			__u8 flags;
+			__le16	rsv2;
+			__u8	rsv1;
+			__u8	flags;
 
 			/* DW1 */
-			__le16 datalen;
-			__le16 wbcpl;
+			__le16	datalen;
+			__le16	wbcpl;
 
 			/* DW2 */
-			__le32 bufaddrh;
+			__le32	bufaddrh;
 
 			/* DW3 */
-			__le32 bufaddrl;
+			__le32	bufaddrl;
 		} desc1;
 		struct {
 			/* DW0 */
-			__le16 vlan;
-			__le16 flags;
+			__le16	vlan;
+			__le16	flags;
 
 			/* DW1 */
-			__le16 framesize;
-			__u8 errstat;
-			__u8 desccnt;
+			__le16	framesize;
+			__u8	errstat;
+			__u8	desccnt;
 
 			/* DW2 */
-			__le32 rsshash;
+			__le32	rsshash;
 
 			/* DW3 */
-			__u8   hashfun;
-			__u8   hashtype;
-			__le16 resrv;
+			__u8	hashfun;
+			__u8	hashtype;
+			__le16	resrv;
 		} descwb;
 	};
 };
+
 enum jme_rxdesc_flags_bits {
 	RXFLAG_OWN	= 0x80,
 	RXFLAG_INT	= 0x40,
 	RXFLAG_64BIT	= 0x20,
 };
+
 enum jme_rxwbdesc_flags_bits {
 	RXWBFLAG_OWN		= 0x8000,
 	RXWBFLAG_INT		= 0x4000,
@@ -300,10 +340,12 @@ enum jme_rxwbdesc_flags_bits {
 	RXWBFLAG_DEST_MUL	= 0x0002,
 	RXWBFLAG_DEST_BRO	= 0x0003,
 };
+
 enum jme_rxwbdesc_desccnt_mask {
 	RXWBDCNT_WBCPL	= 0x80,
 	RXWBDCNT_DCNT	= 0x7F,
 };
+
 enum jme_rxwbdesc_errstat_bits {
 	RXWBERR_LIMIT	= 0x80,
 	RXWBERR_MIIER	= 0x40,
@@ -316,6 +358,9 @@ enum jme_rxwbdesc_errstat_bits {
 	RXWBERR_ALLERR	= 0xFF,
 };
 
+/*
+ * Buffer information corresponding to ring descriptors.
+ */
 struct jme_buffer_info {
 	struct sk_buff *skb;
 	dma_addr_t mapping;
@@ -324,49 +369,28 @@ struct jme_buffer_info {
 	unsigned long start_xmit;
 };
 
+/*
+ * The structure holding buffer information and ring descriptors all together.
+ */
 #define MAX_RING_DESC_NR	1024
 struct jme_ring {
-        void* alloc;		/* pointer to allocated memory */
-        volatile void* desc;	/* pointer to ring memory  */
-        dma_addr_t dmaalloc;	/* phys address of ring alloc */
-        dma_addr_t dma;		/* phys address for ring dma */
+	void *alloc;		/* pointer to allocated memory */
+	void *desc;		/* pointer to ring memory  */
+	dma_addr_t dmaalloc;	/* phys address of ring alloc */
+	dma_addr_t dma;		/* phys address for ring dma */
 
 	/* Buffer information corresponding to each descriptor */
 	struct jme_buffer_info bufinf[MAX_RING_DESC_NR];
 
-        int next_to_use;
-        atomic_t next_to_clean;
+	int next_to_use;
+	atomic_t next_to_clean;
 	atomic_t nr_free;
 };
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
-#define NET_STAT(priv) priv->stats
-#define NETDEV_GET_STATS(netdev, fun_ptr) \
-	netdev->get_stats = fun_ptr
-#define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
-#else
-#define NET_STAT(priv) priv->dev->stats
+#define NET_STAT(priv) (priv->dev->stats)
 #define NETDEV_GET_STATS(netdev, fun_ptr)
 #define DECLARE_NET_DEVICE_STATS
-#endif
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
-#define DECLARE_NAPI_STRUCT
-#define NETIF_NAPI_SET(dev, napis, pollfn, q) \
-	dev->poll = pollfn; \
-	dev->weight = q;
-#define JME_NAPI_HOLDER(holder) struct net_device *holder
-#define JME_NAPI_WEIGHT(w) int *w
-#define JME_NAPI_WEIGHT_VAL(w) *w
-#define JME_NAPI_WEIGHT_SET(w, r) *w = r
-#define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev)
-#define JME_NAPI_ENABLE(priv) netif_poll_enable(priv->dev);
-#define JME_NAPI_DISABLE(priv) netif_poll_disable(priv->dev);
-#define JME_RX_SCHEDULE_PREP(priv) \
-	netif_rx_schedule_prep(priv->dev)
-#define JME_RX_SCHEDULE(priv) \
-	__netif_rx_schedule(priv->dev);
-#else
 #define DECLARE_NAPI_STRUCT struct napi_struct napi;
 #define NETIF_NAPI_SET(dev, napis, pollfn, q) \
 	netif_napi_add(dev, napis, pollfn, q);
@@ -377,24 +401,23 @@ struct jme_ring {
 #define JME_RX_COMPLETE(dev, napis) netif_rx_complete(dev, napis)
 #define JME_NAPI_ENABLE(priv) napi_enable(&priv->napi);
 #define JME_NAPI_DISABLE(priv) \
-	if(!napi_disable_pending(&priv->napi)) \
+	if (!napi_disable_pending(&priv->napi)) \
 		napi_disable(&priv->napi);
 #define JME_RX_SCHEDULE_PREP(priv) \
 	netif_rx_schedule_prep(priv->dev, &priv->napi)
 #define JME_RX_SCHEDULE(priv) \
 	__netif_rx_schedule(priv->dev, &priv->napi);
-#endif
 
 /*
  * Jmac Adapter Private data
  */
 #define SHADOW_REG_NR 8
 struct jme_adapter {
-        struct pci_dev          *pdev;
-        struct net_device       *dev;
-        void __iomem            *regs;
+	struct pci_dev          *pdev;
+	struct net_device       *dev;
+	void __iomem            *regs;
 	dma_addr_t		shadow_dma;
-	__u32			*shadow_regs;
+	u32			*shadow_regs;
 	struct mii_if_info	mii_if;
 	struct jme_ring		rxring[RX_RING_NR];
 	struct jme_ring		txring[TX_RING_NR];
@@ -406,25 +429,27 @@ struct jme_adapter {
 	struct tasklet_struct	txclean_task;
 	struct tasklet_struct	linkch_task;
 	struct tasklet_struct	pcc_task;
-	__u32			flags;
-	__u32			reg_txcs;
-	__u32			reg_txpfc;
-	__u32			reg_rxcs;
-	__u32			reg_rxmcs;
-	__u32			reg_ghc;
-	__u32			reg_pmcs;
-	__u32			phylink;
-	__u32			tx_ring_size;
-	__u32			tx_ring_mask;
-	__u32			tx_wake_threshold;
-	__u32			rx_ring_size;
-	__u32			rx_ring_mask;
-	__u8			mrrs;
-	__u32			fpgaver;
-	__u32			chipver;
+	unsigned long		flags;
+	u32			reg_txcs;
+	u32			reg_txpfc;
+	u32			reg_rxcs;
+	u32			reg_rxmcs;
+	u32			reg_ghc;
+	u32			reg_pmcs;
+	u32			phylink;
+	u32			tx_ring_size;
+	u32			tx_ring_mask;
+	u32			tx_wake_threshold;
+	u32			rx_ring_size;
+	u32			rx_ring_mask;
+	u8			mrrs;
+	unsigned int		fpgaver;
+	unsigned int		chipver;
+	u8			rev;
+	u32			msg_enable;
 	struct ethtool_cmd	old_ecmd;
 	unsigned int		old_mtu;
-	struct vlan_group*	vlgrp;
+	struct vlan_group	*vlgrp;
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
 	atomic_t		link_changing;
@@ -438,37 +463,31 @@ struct jme_adapter {
 	DECLARE_NAPI_STRUCT
 	DECLARE_NET_DEVICE_STATS
 };
+
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
 };
-enum jme_flags_bits {
-	JME_FLAG_MSI		= 0x00000001,
-	JME_FLAG_SSET		= 0x00000002,
-	JME_FLAG_TXCSUM		= 0x00000004,
-	JME_FLAG_TSO		= 0x00000008,
-	JME_FLAG_POLL		= 0x00000010,
-};
-#define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
-#define TX_TIMEOUT		(5*HZ)
-#define JME_REG_LEN		0x500
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
-__always_inline static struct jme_adapter*
-jme_napi_priv(struct net_device *holder)
-{
-	struct jme_adapter* jme;
-	jme = netdev_priv(holder);
-	return jme;
-}
-#else
-__always_inline static struct jme_adapter*
+enum jme_flags_bits {
+	JME_FLAG_MSI		= 1,
+	JME_FLAG_SSET		= 2,
+	JME_FLAG_TXCSUM		= 3,
+	JME_FLAG_TSO		= 4,
+	JME_FLAG_POLL		= 5,
+	JME_FLAG_SHUTDOWN	= 6,
+};
+
+#define TX_TIMEOUT		(5 * HZ)
+#define JME_REG_LEN		0x500
+#define MAX_ETHERNET_JUMBO_PACKET_SIZE 9216
+
+static inline struct jme_adapter*
 jme_napi_priv(struct napi_struct *napi)
 {
-	struct jme_adapter* jme;
+	struct jme_adapter *jme;
 	jme = container_of(napi, struct jme_adapter, napi);
 	return jme;
 }
-#endif
 
 /*
  * MMaped I/O Resters
@@ -521,19 +540,22 @@ enum jme_iomap_regs {
 	JME_SMBINTF	= JME_PHY | 0x44, /* SMB Interface */
 
 
-	JME_TMCSR	= JME_MISC| 0x00, /* Timer Control/Status Register */
-	JME_GPREG0	= JME_MISC| 0x08, /* General purpose REG-0 */
-	JME_GPREG1	= JME_MISC| 0x0C, /* General purpose REG-1 */
-	JME_IEVE	= JME_MISC| 0x20, /* Interrupt Event Status */
-	JME_IREQ	= JME_MISC| 0x24, /* Interrupt Req Status(For Debug) */
-	JME_IENS	= JME_MISC| 0x28, /* Interrupt Enable - Setting Port */
-	JME_IENC	= JME_MISC| 0x2C, /* Interrupt Enable - Clear Port */
-	JME_PCCRX0	= JME_MISC| 0x30, /* PCC Control for RX Queue 0 */
-	JME_PCCTX	= JME_MISC| 0x40, /* PCC Control for TX Queues */
-	JME_CHIPMODE	= JME_MISC| 0x44, /* Identify FPGA Version */
-	JME_SHBA_HI	= JME_MISC| 0x48, /* Shadow Register Base HI */
-	JME_SHBA_LO	= JME_MISC| 0x4C, /* Shadow Register Base LO */
-	JME_PCCSRX0	= JME_MISC| 0x80, /* PCC Status of RX0 */
+	JME_TMCSR	= JME_MISC | 0x00, /* Timer Control/Status Register */
+	JME_GPREG0	= JME_MISC | 0x08, /* General purpose REG-0 */
+	JME_GPREG1	= JME_MISC | 0x0C, /* General purpose REG-1 */
+	JME_IEVE	= JME_MISC | 0x20, /* Interrupt Event Status */
+	JME_IREQ	= JME_MISC | 0x24, /* Intr Req Status(For Debug) */
+	JME_IENS	= JME_MISC | 0x28, /* Intr Enable - Setting Port */
+	JME_IENC	= JME_MISC | 0x2C, /* Interrupt Enable - Clear Port */
+	JME_PCCRX0	= JME_MISC | 0x30, /* PCC Control for RX Queue 0 */
+	JME_PCCTX	= JME_MISC | 0x40, /* PCC Control for TX Queues */
+	JME_CHIPMODE	= JME_MISC | 0x44, /* Identify FPGA Version */
+	JME_SHBA_HI	= JME_MISC | 0x48, /* Shadow Register Base HI */
+	JME_SHBA_LO	= JME_MISC | 0x4C, /* Shadow Register Base LO */
+	JME_TIMER1	= JME_MISC | 0x70, /* Timer1 */
+	JME_TIMER2	= JME_MISC | 0x74, /* Timer2 */
+	JME_APMC	= JME_MISC | 0x7C, /* Aggressive Power Mode Control */
+	JME_PCCSRX0	= JME_MISC | 0x80, /* PCC Status of RX0 */
 };
 
 /*
@@ -553,6 +575,7 @@ enum jme_txcs_bits {
 	TXCS_BURST	= 0x00000004,
 	TXCS_ENABLE	= 0x00000001,
 };
+
 enum jme_txcs_value {
 	TXCS_FIFOTH_16QW	= 0x000000C0,
 	TXCS_FIFOTH_12QW	= 0x00000080,
@@ -576,6 +599,7 @@ enum jme_txcs_value {
 	TXCS_DEFAULT		= TXCS_FIFOTH_4QW |
 				  TXCS_BURST,
 };
+
 #define JME_TX_DISABLE_TIMEOUT 10 /* 10 msec */
 
 /*
@@ -594,6 +618,7 @@ enum jme_txmcs_bit_masks {
 	TXMCS_CRC		= 0x00000002,
 	TXMCS_PADDING		= 0x00000001,
 };
+
 enum jme_txmcs_values {
 	TXMCS_IFG2_6_4		= 0x00000000,
 	TXMCS_IFG2_8_5		= 0x40000000,
@@ -630,11 +655,11 @@ enum jme_txtrhd_bits_masks {
 	TXTRHD_TXREN		= 0x00000080,
 	TXTRHD_TXRL		= 0x0000007F,
 };
+
 enum jme_txtrhd_shifts {
 	TXTRHD_TXP_SHIFT	= 8,
 	TXTRHD_TXRL_SHIFT	= 0,
 };
-
 
 /*
  * RX Control/Status Bits
@@ -656,6 +681,7 @@ enum jme_rxcs_bit_masks {
 	RXCS_SUSPEND	= 0x00000002,
 	RXCS_ENABLE	= 0x00000001,
 };
+
 enum jme_rxcs_values {
 	RXCS_FIFOTHTP_16T	= 0x00000000,
 	RXCS_FIFOTHTP_32T	= 0x10000000,
@@ -709,6 +735,7 @@ enum jme_rxcs_values {
 				  RXCS_RETRYGAP_256ns |
 				  RXCS_RETRYCNT_32,
 };
+
 #define JME_RX_DISABLE_TIMEOUT 10 /* 10 msec */
 
 /*
@@ -738,11 +765,13 @@ enum jme_rxmcs_bits {
  */
 #define WAKEUP_FRAME_NR	8
 #define WAKEUP_FRAME_MASK_DWNR	4
+
 enum jme_wfoi_bit_masks {
 	WFOI_MASK_SEL		= 0x00000070,
 	WFOI_CRC_SEL		= 0x00000008,
 	WFOI_FRAME_SEL		= 0x00000007,
 };
+
 enum jme_wfoi_shifts {
 	WFOI_MASK_SHIFT		= 4,
 };
@@ -750,8 +779,7 @@ enum jme_wfoi_shifts {
 /*
  * SMI Related definitions
  */
-enum jme_smi_bit_mask
-{
+enum jme_smi_bit_mask {
 	SMI_DATA_MASK		= 0xFFFF0000,
 	SMI_REG_ADDR_MASK	= 0x0000F800,
 	SMI_PHY_ADDR_MASK	= 0x000007C0,
@@ -763,20 +791,23 @@ enum jme_smi_bit_mask
 	SMI_OP_MDC		= 0x00000002, /* Software CLK Control */
 	SMI_OP_MDEN		= 0x00000001, /* Software access Enable */
 };
-enum jme_smi_bit_shift
-{
+
+enum jme_smi_bit_shift {
 	SMI_DATA_SHIFT		= 16,
 	SMI_REG_ADDR_SHIFT	= 11,
 	SMI_PHY_ADDR_SHIFT	= 6,
 };
-__always_inline __u32 smi_reg_addr(int x)
+
+static inline u32 smi_reg_addr(int x)
 {
-        return (((x) << SMI_REG_ADDR_SHIFT) & SMI_REG_ADDR_MASK);
+	return (x << SMI_REG_ADDR_SHIFT) & SMI_REG_ADDR_MASK;
 }
-__always_inline __u32 smi_phy_addr(int x)
+
+static inline u32 smi_phy_addr(int x)
 {
-        return (((x) << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK);
+	return (x << SMI_PHY_ADDR_SHIFT) & SMI_PHY_ADDR_MASK;
 }
+
 #define JME_PHY_TIMEOUT 100 /* 100 msec */
 #define JME_PHY_REG_NR 32
 
@@ -789,6 +820,7 @@ enum jme_ghc_bit_mask {
 	GHC_SPEED	= 0x00000030,
 	GHC_LINK_POLL	= 0x00000001,
 };
+
 enum jme_ghc_speed_val {
 	GHC_SPEED_10M	= 0x00000010,
 	GHC_SPEED_100M	= 0x00000020,
@@ -834,11 +866,13 @@ enum jme_phy_link_bit_mask {
 	PHY_LINK_AUTONEG_COMPLETE	= 0x00000200,
 	PHY_LINK_MDI_STAT		= 0x00000040,
 };
+
 enum jme_phy_link_speed_val {
 	PHY_LINK_SPEED_10M		= 0x00000000,
 	PHY_LINK_SPEED_100M		= 0x00004000,
 	PHY_LINK_SPEED_1000M		= 0x00008000,
 };
+
 #define JME_SPDRSV_TIMEOUT	500	/* 500 us */
 
 /*
@@ -851,6 +885,7 @@ enum jme_smbcsr_bit_mask {
 	SMBCSR_INITDONE	= 0x00000010,
 	SMBCSR_BUSY	= 0x0000000F,
 };
+
 enum jme_smbintf_bit_mask {
 	SMBINTF_HWDATR	= 0xFF000000,
 	SMBINTF_HWDATW	= 0x00FF0000,
@@ -862,15 +897,18 @@ enum jme_smbintf_bit_mask {
 	SMBINTF_GPIOSDA	= 0x00000002,
 	SMBINTF_GPIOEN	= 0x00000001,
 };
+
 enum jme_smbintf_vals {
 	SMBINTF_HWRWN_READ	= 0x00000020,
 	SMBINTF_HWRWN_WRITE	= 0x00000000,
 };
+
 enum jme_smbintf_shifts {
 	SMBINTF_HWDATR_SHIFT	= 24,
 	SMBINTF_HWDATW_SHIFT	= 16,
 	SMBINTF_HWADDR_SHIFT	= 8,
 };
+
 #define JME_EEPROM_RELOAD_TIMEOUT 2000 /* 2000 msec */
 #define JME_SMB_BUSY_TIMEOUT 20 /* 20 msec */
 #define JME_SMB_LEN 256
@@ -885,9 +923,8 @@ enum jme_tmcsr_bit_masks {
 	TMCSR_CNT	= 0x00FFFFFF,
 };
 
-
 /*
- * General Purpost REG-0
+ * General Purpose REG-0
  */
 enum jme_gpreg0_masks {
 	GPREG0_DISSH		= 0xFF000000,
@@ -897,6 +934,7 @@ enum jme_gpreg0_masks {
 	GPREG0_PCCTMR		= 0x00000300,
 	GPREG0_PHYADDR		= 0x0000001F,
 };
+
 enum jme_gpreg0_vals {
 	GPREG0_DISSH_DW7	= 0x80000000,
 	GPREG0_DISSH_DW6	= 0x40000000,
@@ -921,7 +959,6 @@ enum jme_gpreg0_vals {
 	GPREG0_PHYADDR_1	= 0x00000001,
 
 	GPREG0_DEFAULT		= GPREG0_PCIRLMT_4 |
-//				  GPREG0_PCCNOMUTCLR |
 				  GPREG0_PCCTMR_1us |
 				  GPREG0_PHYADDR_1,
 };
@@ -929,8 +966,7 @@ enum jme_gpreg0_vals {
 /*
  * Interrupt Status Bits
  */
-enum jme_interrupt_bits
-{
+enum jme_interrupt_bits {
 	INTR_SWINTR	= 0x80000000,
 	INTR_TMINTR	= 0x40000000,
 	INTR_LINKCH	= 0x20000000,
@@ -964,7 +1000,8 @@ enum jme_interrupt_bits
 	INTR_TX1	= 0x00000002,
 	INTR_TX0	= 0x00000001,
 };
-static const __u32 INTR_ENABLE = INTR_SWINTR |
+
+static const u32 INTR_ENABLE = INTR_SWINTR |
 				 INTR_TMINTR |
 				 INTR_LINKCH |
 				 INTR_PCCRX0TO |
@@ -980,19 +1017,23 @@ enum jme_pccrx_masks {
 	PCCRXTO_MASK	= 0xFFFF0000,
 	PCCRX_MASK	= 0x0000FF00,
 };
+
 enum jme_pcctx_masks {
 	PCCTXTO_MASK	= 0xFFFF0000,
 	PCCTX_MASK	= 0x0000FF00,
 	PCCTX_QS_MASK	= 0x000000FF,
 };
+
 enum jme_pccrx_shifts {
 	PCCRXTO_SHIFT	= 16,
 	PCCRX_SHIFT	= 8,
 };
+
 enum jme_pcctx_shifts {
 	PCCTXTO_SHIFT	= 16,
 	PCCTX_SHIFT	= 8,
 };
+
 enum jme_pcctx_bits {
 	PCCTXQ0_EN	= 0x00000001,
 	PCCTXQ1_EN	= 0x00000002,
@@ -1012,6 +1053,7 @@ enum jme_chipmode_bit_masks {
 	CM_CHIPVER_MASK		= 0x0000FF00,
 	CM_CHIPMODE_MASK	= 0x0000000F,
 };
+
 enum jme_chipmode_shifts {
 	CM_FPGAVER_SHIFT	= 16,
 	CM_CHIPVER_SHIFT	= 8,
@@ -1025,23 +1067,96 @@ enum jme_shadow_base_address_bits {
 };
 
 /*
+ * Aggressive Power Mode Control
+ */
+enum jme_apmc_bits {
+	JME_APMC_PCIE_SD_EN	= 0x40000000,
+	JME_APMC_PSEUDO_HP_EN	= 0x20000000,
+	JME_APMC_EPIEN		= 0x04000000,
+	JME_APMC_EPIEN_CTRL	= 0x03000000,
+};
+
+enum jme_apmc_values {
+	JME_APMC_EPIEN_CTRL_EN	= 0x02000000,
+	JME_APMC_EPIEN_CTRL_DIS	= 0x01000000,
+};
+
+#define APMC_PHP_SHUTDOWN_DELAY	(10 * 1000 * 1000)
+
+#ifdef REG_DEBUG
+static char *MAC_REG_NAME[] = {
+	"JME_TXCS",      "JME_TXDBA_LO",  "JME_TXDBA_HI", "JME_TXQDC",
+	"JME_TXNDA",     "JME_TXMCS",     "JME_TXPFC",    "JME_TXTRHD",
+	"JME_RXCS",      "JME_RXDBA_LO",  "JME_RXDBA_HI", "JME_RXQDC",
+	"JME_RXNDA",     "JME_RXMCS",     "JME_RXUMA_LO", "JME_RXUMA_HI",
+	"JME_RXMCHT_LO", "JME_RXMCHT_HI", "JME_WFODP",    "JME_WFOI",
+	"JME_SMI",       "JME_GHC",       "UNKNOWN",      "UNKNOWN",
+	"JME_PMCS"};
+static char *PE_REG_NAME[] = {
+	"UNKNOWN",      "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
+	"UNKNOWN",      "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
+	"UNKNOWN",      "UNKNOWN",     "JME_PHY_CS", "UNKNOWN",
+	"JME_PHY_LINK", "UNKNOWN",     "UNKNOWN",    "UNKNOWN",
+	"JME_SMBCSR",   "JME_SMBINTF"};
+static char *MISC_REG_NAME[] = {
+	"JME_TMCSR",  "JME_GPIO",     "JME_GPREG0",  "JME_GPREG1",
+	"JME_IEVE",   "JME_IREQ",     "JME_IENS",    "JME_IENC",
+	"JME_PCCRX0", "JME_PCCRX1",   "JME_PCCRX2",  "JME_PCCRX3",
+	"JME_PCCTX0", "JME_CHIPMODE", "JME_SHBA_HI", "JME_SHBA_LO",
+	"UNKNOWN",    "UNKNOWN",      "UNKNOWN",     "UNKNOWN",
+	"UNKNOWN",    "UNKNOWN",      "UNKNOWN",     "UNKNOWN",
+	"UNKNOWN",    "UNKNOWN",      "UNKNOWN",     "UNKNOWN",
+	"JME_TIMER1", "JME_TIMER2",   "UNKNOWN",     "JME_APMC",
+	"JME_PCCSRX0"};
+static inline void reg_dbg(const struct jme_adapter *jme,
+		const char *msg, u32 val, u32 reg)
+{
+	const char *regname;
+	switch(reg & 0xF00) {
+	case 0x000:
+		regname = MAC_REG_NAME[(reg & 0xFF) >> 2];
+		break;
+	case 0x400:
+		regname = PE_REG_NAME[(reg & 0xFF) >> 2];
+		break;
+	case 0x800:
+		regname = MISC_REG_NAME[(reg & 0xFF) >>2];
+		break;
+	default:
+		regname = PE_REG_NAME[0];
+	}
+	printk(KERN_DEBUG "%s: %-20s %08x@%s\n", jme->dev->name,
+			msg, val, regname);
+}
+#else
+static inline void reg_dbg(const struct jme_adapter *jme,
+		const char *msg, u32 val, u32 reg) {}
+#endif
+
+/*
  * Read/Write MMaped I/O Registers
  */
-__always_inline __u32 jread32(struct jme_adapter *jme, __u32 reg)
+static inline u32 jread32(struct jme_adapter *jme, u32 reg)
 {
-	return le32_to_cpu(readl((__u8*)jme->regs + reg));
+	return readl(jme->regs + reg);
 }
-__always_inline void jwrite32(struct jme_adapter *jme, __u32 reg, __u32 val)
+
+static inline void jwrite32(struct jme_adapter *jme, u32 reg, u32 val)
 {
-	writel(cpu_to_le32(val), (__u8*)jme->regs + reg);
+	reg_dbg(jme, "REG WRITE", val, reg);
+	writel(val, jme->regs + reg);
+	reg_dbg(jme, "VAL AFTER WRITE", readl(jme->regs + reg), reg);
 }
-__always_inline void jwrite32f(struct jme_adapter *jme, __u32 reg, __u32 val)
+
+static inline void jwrite32f(struct jme_adapter *jme, u32 reg, u32 val)
 {
 	/*
 	 * Read after write should cause flush
 	 */
-	writel(cpu_to_le32(val), (__u8*)jme->regs + reg);
-	readl((__u8*)jme->regs + reg);
+	reg_dbg(jme, "REG WRITE FLUSH", val, reg);
+	writel(val, jme->regs + reg);
+	readl(jme->regs + reg);
+	reg_dbg(jme, "VAL AFTER WRITE", readl(jme->regs + reg), reg);
 }
 
 /*
@@ -1054,31 +1169,20 @@ enum jme_phy_reg17_bit_masks {
 	PREG17_LNKUP		= 0x0400,
 	PREG17_MDI		= 0x0040,
 };
+
 enum jme_phy_reg17_vals {
 	PREG17_SPEED_10M	= 0x0000,
 	PREG17_SPEED_100M	= 0x4000,
 	PREG17_SPEED_1000M	= 0x8000,
 };
+
 #define BMSR_ANCOMP               0x0020
 
 /*
- * Function prototypes for ethtool
+ * Function prototypes
  */
-static void jme_get_drvinfo(struct net_device *netdev,
-			     struct ethtool_drvinfo *info);
-static int jme_get_settings(struct net_device *netdev,
-			     struct ethtool_cmd *ecmd);
 static int jme_set_settings(struct net_device *netdev,
-			     struct ethtool_cmd *ecmd);
-static u32 jme_get_link(struct net_device *netdev);
-
-
-/*
- * Function prototypes for netdev
- */
-static int jme_open(struct net_device *netdev);
-static int jme_close(struct net_device *netdev);
-static int jme_start_xmit(struct sk_buff *skb, struct net_device *netdev);
-static int jme_set_macaddr(struct net_device *netdev, void *p);
+				struct ethtool_cmd *ecmd);
 static void jme_set_multi(struct net_device *netdev);
 
+#endif
