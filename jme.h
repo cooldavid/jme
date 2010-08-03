@@ -24,12 +24,12 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.4"
+#define DRV_VERSION	"0.5"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
 #define dprintk(devname, fmt, args...) \
-        printk(KERN_DEBUG PFX "%s: " fmt, devname, ## args)
+        printk(KERN_DEBUG "%s: " fmt, devname, ## args)
 #else
 #define dprintk(devname, fmt, args...)
 #endif
@@ -47,10 +47,10 @@
 #endif
 
 #define jprintk(devname, fmt, args...) \
-        printk(KERN_INFO PFX "%s: " fmt, devname, ## args)
+        printk(KERN_INFO "%s: " fmt, devname, ## args)
 
 #define jeprintk(devname, fmt, args...) \
-        printk(KERN_ERR PFX "%s: " fmt, devname, ## args)
+        printk(KERN_ERR "%s: " fmt, devname, ## args)
 
 #define USE_IEVE_SHADOW 0
 
@@ -97,6 +97,8 @@ struct dynpcc_info {
 #define PCC_INTERVAL (HZ / 10)
 #define PCC_P3_THRESHOLD 3*1024*1024
 #define PCC_P2_THRESHOLD 1000
+#define PCC_TX_TO 60000
+#define PCC_TX_CNT 8
 
 /*
  * TX/RX Descriptors
@@ -149,9 +151,27 @@ struct txdesc {
 			/* DW3 */
 			__u32 bufaddrl;
 		} desc2;
+		struct {
+			/* DW0 */
+			__u8 ehdrsz;
+			__u8 rsv1;
+			__u8 rsv2;
+			__u8 flags;
+
+			/* DW1 */
+			__u16 trycnt;
+			__u16 segcnt;
+
+			/* DW2 */
+			__u16 pktsz;
+			__u16 rsv3;
+
+			/* DW3 */
+			__u32 bufaddrl;
+		} descwb;
 	};
 };
-enum jme_txdesc_flag_bits {
+enum jme_txdesc_flags_bits {
 	TXFLAG_OWN	= 0x80,
 	TXFLAG_INT	= 0x40,
 	TXFLAG_64BIT	= 0x20,
@@ -161,6 +181,17 @@ enum jme_txdesc_flag_bits {
 	TXFLAG_LSEN	= 0x02,
 	TXFLAG_TAGON	= 0x01,
 };
+enum jme_rxdescwb_flags_bits {
+	TXWBFLAG_OWN	= 0x80,
+	TXWBFLAG_INT	= 0x40,
+	TXWBFLAG_TMOUT	= 0x20,
+	TXWBFLAG_TRYOUT	= 0x10,
+	TXWBFLAG_COL	= 0x08,
+
+	TXWBFLAG_ALLERR	= TXWBFLAG_TMOUT |
+			  TXWBFLAG_TRYOUT |
+			  TXWBFLAG_COL,
+};
 
 
 #define RX_DESC_SIZE		16
@@ -169,9 +200,7 @@ enum jme_txdesc_flag_bits {
 #define RX_RING_SIZE		(RING_DESC_NR * RX_DESC_SIZE)
 
 #define RX_BUF_DMA_ALIGN	8
-//#define RX_BUF_SIZE		1600
-#define RX_BUF_SIZE		9200
-//#define RX_BUF_SIZE		4000
+#define RX_BUF_SIZE		9216
 #define RX_PREPAD_SIZE		10
 
 /*
@@ -310,11 +339,14 @@ struct jme_adapter {
 	spinlock_t		tx_lock;
 	spinlock_t		phy_lock;
 	spinlock_t		macaddr_lock;
+	spinlock_t		rxmcs_lock;
 	struct tasklet_struct	rxempty_task;
 	struct tasklet_struct	rxclean_task;
 	struct tasklet_struct	txclean_task;
 	struct tasklet_struct	linkch_task;
+	__u32			features;
 	__u32			reg_txcs;
+	__u32			reg_txpfc;
 	__u32			reg_rxmcs;
 	__u32			reg_ghc;
 	__u32			phylink;
@@ -329,7 +361,12 @@ struct jme_adapter {
 enum shadow_reg_val {
 	SHADOW_IEVE = 0,
 };
+enum jme_features_bits {
+	JME_FEATURE_LALALA	= 0x00000001,
+};
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
+#define TX_TIMEOUT		(5*HZ)
+
 
 /*
  * MMaped I/O Resters
@@ -339,6 +376,13 @@ enum jme_iomap_offsets {
 	JME_PHY		= 0x0400,
 	JME_MISC	= 0x0800,
 	JME_RSS		= 0x0C00,
+};
+
+enum jme_iomap_lens {
+	JME_MAC_LEN	= 0x80,
+	JME_PHY_LEN	= 0x58,
+	JME_MISC_LEN	= 0x98,
+	JME_RSS_LEN	= 0xFF,
 };
 
 enum jme_iomap_regs {
@@ -427,7 +471,7 @@ enum jme_txcs_value {
 	TXCS_DEFAULT		= TXCS_FIFOTH_4QW |
 				  TXCS_BURST,
 };
-#define JME_TX_DISABLE_TIMEOUT 100 /* 100 msec */
+#define JME_TX_DISABLE_TIMEOUT 5 /* 5 msec */
 
 /*
  * TX MAC Control/Status Bits
@@ -467,6 +511,23 @@ enum jme_txmcs_values {
 				  TXMCS_DEFER |
 				  TXMCS_CRC |
 				  TXMCS_PADDING,
+};
+
+enum jme_txpfc_bits_masks {
+	TXPFC_VLAN_TAG		= 0xFFFF0000,
+	TXPFC_VLAN_EN		= 0x00008000,
+	TXPFC_PF_EN		= 0x00000001,
+};
+
+enum jme_txtrhd_bits_masks {
+	TXTRHD_TXPEN		= 0x80000000,
+	TXTRHD_TXP		= 0x7FFFFF00,
+	TXTRHD_TXREN		= 0x00000080,
+	TXTRHD_TXRL		= 0x0000007F,
+};
+enum jme_txtrhd_shifts {
+	TXTRHD_TXP_SHIFT	= 8,
+	TXTRHD_TXRL_SHIFT	= 0,
 };
 
 
@@ -538,12 +599,13 @@ enum jme_rxcs_values {
 	RXCS_RETRYCNT_60	= 0x00000F00,
 
 	RXCS_DEFAULT		= RXCS_FIFOTHTP_128T |
-				  RXCS_FIFOTHNP_128QW |
+				  //RXCS_FIFOTHNP_128QW |
+				  RXCS_FIFOTHNP_32QW |
 				  RXCS_DMAREQSZ_128B |
 				  RXCS_RETRYGAP_256ns |
 				  RXCS_RETRYCNT_32,
 };
-#define JME_RX_DISABLE_TIMEOUT 100 /* 100 msec */
+#define JME_RX_DISABLE_TIMEOUT 5 /* 5 msec */
 
 /*
  * RX MAC Control/Status Bits
@@ -560,6 +622,11 @@ enum jme_rxmcs_bits {
 	RXMCS_VTAGRM		= 0x00000004,
 	RXMCS_PREPAD		= 0x00000002,
 	RXMCS_CHECKSUM		= 0x00000001,
+	
+	RXMCS_DEFAULT		= RXMCS_VTAGRM |
+				  RXMCS_PREPAD |
+				  RXMCS_FLOWCTRL |
+				  RXMCS_CHECKSUM,
 };
 
 /*
