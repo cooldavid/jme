@@ -969,14 +969,11 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 			skb->ip_summed = CHECKSUM_NONE;
 
 		if (rxdesc->descwb.flags & cpu_to_le16(RXWBFLAG_TAGON)) {
-			spin_lock(&jme->vlgrp_lock);
 			if (jme->vlgrp) {
 				jme->jme_vlan_rx(skb, jme->vlgrp,
 					le16_to_cpu(rxdesc->descwb.vlan));
-				spin_unlock(&jme->vlgrp_lock);
 				NET_STAT(jme).rx_bytes += 4;
 			} else {
-				spin_unlock(&jme->vlgrp_lock);
 				dev_kfree_skb(skb);
 			}
 		} else {
@@ -2211,14 +2208,45 @@ jme_tx_timeout(struct net_device *netdev)
 	jme_reset_link(jme);
 }
 
+static inline void jme_pause_rx(struct jme_adapter *jme)
+{
+	atomic_dec(&jme->link_changing);
+
+	jme_set_rx_pcc(jme, PCC_OFF);
+	if (test_bit(JME_FLAG_POLL, &jme->flags)) {
+		JME_NAPI_DISABLE(jme);
+	} else {
+		tasklet_disable(&jme->rxclean_task);
+		tasklet_disable(&jme->rxempty_task);
+	}
+}
+
+static inline void jme_resume_rx(struct jme_adapter *jme)
+{
+	struct dynpcc_info *dpi = &(jme->dpi);
+
+	if (test_bit(JME_FLAG_POLL, &jme->flags)) {
+		JME_NAPI_ENABLE(jme);
+	} else {
+		tasklet_hi_enable(&jme->rxclean_task);
+		tasklet_hi_enable(&jme->rxempty_task);
+	}
+	dpi->cur		= PCC_P1;
+	dpi->attempt		= PCC_P1;
+	dpi->cnt		= 0;
+	jme_set_rx_pcc(jme, PCC_P1);
+
+	atomic_inc(&jme->link_changing);
+}
+
 static void
 jme_vlan_rx_register(struct net_device *netdev, struct vlan_group *grp)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
 
-	spin_lock_bh(&jme->vlgrp_lock);
+	jme_pause_rx(jme);
 	jme->vlgrp = grp;
-	spin_unlock_bh(&jme->vlgrp_lock);
+	jme_resume_rx(jme);
 }
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
@@ -2227,15 +2255,15 @@ jme_vlan_rx_kill_vid(struct net_device *netdev, unsigned short vid)
 {
 	struct jme_adapter *jme = netdev_priv(netdev);
 
-	spin_lock_bh(&jme->vlgrp_lock);
 	if(jme->vlgrp) {
+		jme_pause_rx(jme);
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,20)
 		jme->vlgrp->vlan_devices[vid] = NULL;
 #else
 		vlan_group_set_device(jme->vlgrp, vid, NULL);
 #endif
+		jme_resume_rx(jme);
 	}
-	spin_unlock_bh(&jme->vlgrp_lock);
 }
 #endif
 
@@ -2973,7 +3001,6 @@ jme_init_one(struct pci_dev *pdev,
 	spin_lock_init(&jme->phy_lock);
 	spin_lock_init(&jme->macaddr_lock);
 	spin_lock_init(&jme->rxmcs_lock);
-	spin_lock_init(&jme->vlgrp_lock);
 
 	atomic_set(&jme->link_changing, 1);
 	atomic_set(&jme->rx_cleaning, 1);
