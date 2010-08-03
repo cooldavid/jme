@@ -22,37 +22,13 @@
  */
 
 /*
- * Note:
- * 	Backdoor for changing "FIFO Threshold for processing next packet"
- * 	   Using:
- *		ethtool -C eth1 adaptive-rx on adaptive-tx on \
- *		rx-usecs 250 rx-frames-low N
- *	   N := 16 | 32 | 64 | 128
- */
-
-/*
- * Timeline before release:
- * 	Stage 5: Advanced offloading support.
- * 	0.9:
- *	-  Implement scatter-gather offloading.
- *	   Use pci_map_page on scattered sk_buff for HIGHMEM support
- * 	-  Implement TCP Segement offloading.
- * 		Due to TX FIFO size, we should turn off tso when mtu > 1500.
- *
- * 	Stage 6: CPU Load balancing.
- * 	1.0:
+ * TODO:
  * 	-  Implement MSI-X.
  * 	   Along with multiple RX queue, for CPU load balancing.
- *
- * 	Stage 7:
- * 	-  Cleanup/re-orginize code, performence tuneing(alignment etc...).
- * 	-  Test and Release 1.0
- *
- * 	Non-Critical:
- *  	-  Use NAPI instead of rx_tasklet?
+ *	-  Decode register dump for ethtool.
+ *  	-  Implement NAPI?
  * 		PCC Support Both Packet Counter and Timeout Interrupt for
  * 		receive and transmit complete, does NAPI really needed?
- *	-  Decode register dump for ethtool.
  */
 
 #include <linux/version.h>
@@ -96,7 +72,8 @@ jme_mdio_read(struct net_device *netdev, int phy, int reg)
 	wmb();
         for (i = JME_PHY_TIMEOUT ; i > 0 ; --i) {
 		udelay(1);
-		if (((val = jread32(jme, JME_SMI)) & SMI_OP_REQ) == 0)
+		val = jread32(jme, JME_SMI);
+		if ((val & SMI_OP_REQ) == 0)
 			break;
         }
 
@@ -122,7 +99,8 @@ jme_mdio_write(struct net_device *netdev,
 	wmb();
 	for (i = JME_PHY_TIMEOUT ; i > 0 ; --i) {
 		udelay(1);
-		if (((val = jread32(jme, JME_SMI)) & SMI_OP_REQ) == 0)
+		val = jread32(jme, JME_SMI);
+		if ((val & SMI_OP_REQ) == 0)
 			break;
 	}
 
@@ -158,17 +136,47 @@ jme_reset_phy_processor(struct jme_adapter *jme)
 	return;
 }
 
+static void
+jme_setup_wakeup_frame(struct jme_adapter *jme,
+		__u32 *mask, __u32 crc, int fnr)
+{
+	int i;
+
+	/*
+	 * Setup CRC pattern
+	 */
+	jwrite32(jme, JME_WFOI, WFOI_CRC_SEL | (fnr & WFOI_FRAME_SEL));
+	wmb();
+	jwrite32(jme, JME_WFODP, crc);
+	wmb();
+
+	/*
+	 * Setup Mask
+	 */
+	for(i = 0 ; i < WAKEUP_FRAME_MASK_DWNR ; ++i) {
+		jwrite32(jme, JME_WFOI,
+				((i << WFOI_MASK_SHIFT) & WFOI_MASK_SEL) |
+				(fnr & WFOI_FRAME_SEL));
+		wmb();
+		jwrite32(jme, JME_WFODP, mask[i]);
+		wmb();
+	}
+}
 
 __always_inline static void
 jme_reset_mac_processor(struct jme_adapter *jme)
 {
+	__u32 mask[WAKEUP_FRAME_MASK_DWNR] = {0,0,0,0};
+	__u32 crc = 0xCDCDCDCD;
+	int i;
+
 	jwrite32(jme, JME_GHC, jme->reg_ghc | GHC_SWRST);
 	udelay(2);
 	jwrite32(jme, JME_GHC, jme->reg_ghc);
 	jwrite32(jme, JME_RXMCHT_LO, 0x00000000);
 	jwrite32(jme, JME_RXMCHT_HI, 0x00000000);
-	jwrite32(jme, JME_WFODP, 0);
-	jwrite32(jme, JME_WFOI, 0);
+	for(i = 0 ; i < WAKEUP_FRAME_NR ; ++i)
+		jme_setup_wakeup_frame(jme, mask, crc, i);
 	jwrite32(jme, JME_GPREG0, GPREG0_DEFAULT);
 	jwrite32(jme, JME_GPREG1, 0);
 }
@@ -315,6 +323,7 @@ jme_check_link(struct net_device *netdev, int testonly)
 	char linkmsg[64];
 	int rc = 0;
 
+	linkmsg[0] = '\0';
 	phylink = jread32(jme, JME_PHY_LINK);
 
         if (phylink & PHY_LINK_UP) {
@@ -340,7 +349,7 @@ jme_check_link(struct net_device *netdev, int testonly)
 			phylink |= (bmcr & BMCR_FULLDPLX) ?
 					 PHY_LINK_DUPLEX : 0;
 
-			strcpy(linkmsg, "Forced: ");
+			strcat(linkmsg, "Forced: ");
 		}
 		else {
 			/*
@@ -358,7 +367,7 @@ jme_check_link(struct net_device *netdev, int testonly)
 				jeprintk(netdev->name,
 					"Waiting speed resolve timeout.\n");
 
-			strcpy(linkmsg, "ANed: ");
+			strcat(linkmsg, "ANed: ");
 		}
 
 		if(jme->phylink == phylink) {
@@ -373,15 +382,15 @@ jme_check_link(struct net_device *netdev, int testonly)
 		switch(phylink & PHY_LINK_SPEED_MASK) {
 			case PHY_LINK_SPEED_10M:
 				ghc = GHC_SPEED_10M;
-				strcpy(linkmsg, "10 Mbps, ");
+				strcat(linkmsg, "10 Mbps, ");
 				break;
 			case PHY_LINK_SPEED_100M:
 				ghc = GHC_SPEED_100M;
-				strcpy(linkmsg, "100 Mbps, ");
+				strcat(linkmsg, "100 Mbps, ");
 				break;
 			case PHY_LINK_SPEED_1000M:
 				ghc = GHC_SPEED_1000M;
-				strcpy(linkmsg, "1000 Mbps, ");
+				strcat(linkmsg, "1000 Mbps, ");
 				break;
 			default:
 				ghc = 0;
@@ -430,157 +439,15 @@ out:
 	return rc;
 }
 
-
-static int
-jme_alloc_txdesc(struct jme_adapter *jme,
-			int nr_alloc)
-{
-	struct jme_ring *txring = jme->txring;
-	int idx;
-
-	idx = txring->next_to_use;
-
-	if(unlikely(atomic_read(&txring->nr_free) < nr_alloc))
-		return -1;
-
-	atomic_sub(nr_alloc, &txring->nr_free);
-
-	if((txring->next_to_use += nr_alloc) >= RING_DESC_NR)
-		txring->next_to_use -= RING_DESC_NR;
-
-	return idx;
-}
-
-static void
-jme_tx_csum(struct sk_buff *skb, unsigned mtu, __u8 *flags)
-{
-	if(skb->ip_summed == CHECKSUM_PARTIAL) {
-		__u8 ip_proto;
-
-		switch (skb->protocol) {
-		case __constant_htons(ETH_P_IP):
-			ip_proto = ip_hdr(skb)->protocol;
-			break;
-		case __constant_htons(ETH_P_IPV6):
-			ip_proto = ipv6_hdr(skb)->nexthdr;
-			break;
-		default:
-			ip_proto = 0;
-			break;
-		}
-
-
-		switch(ip_proto) {
-		case IPPROTO_TCP:
-			*flags |= TXFLAG_TCPCS;
-			break;
-		case IPPROTO_UDP:
-			*flags |= TXFLAG_UDPCS;
-			break;
-		default:
-			jeprintk("jme", "Error upper layer protocol.\n");
-			break;
-		}
-	}
-}
-
-__always_inline static void
-jme_tx_vlan(struct sk_buff *skb, volatile __u16 *vlan, __u8 *flags)
-{
-	if(vlan_tx_tag_present(skb)) {
-		*flags |= TXFLAG_TAGON;
-		*vlan = vlan_tx_tag_get(skb);
-	}
-}
-
-static int
-jme_set_new_txdesc(struct jme_adapter *jme,
-			struct sk_buff *skb)
-{
-	struct jme_ring *txring = jme->txring;
-	volatile struct txdesc *txdesc = txring->desc, *ctxdesc;
-	struct jme_buffer_info *txbi = txring->bufinf, *ctxbi;
-	dma_addr_t dmaaddr;
-	int i, idx, nr_desc;
-	__u8 flags;
-
-	nr_desc = 2;
-	idx = jme_alloc_txdesc(jme, nr_desc);
-
-	if(unlikely(idx<0))
-		return NETDEV_TX_BUSY;
-
-	for(i = 1 ; i < nr_desc  ; ++i) {
-		ctxdesc = txdesc + ((idx + i) & (RING_DESC_NR-1));
-		ctxbi = txbi + ((idx + i) & (RING_DESC_NR-1));
-
-		dmaaddr = pci_map_single(jme->pdev,
-					 skb->data,
-					 skb->len,
-					 PCI_DMA_TODEVICE);
-
-		pci_dma_sync_single_for_device(jme->pdev,
-					       dmaaddr,
-					       skb->len,
-					       PCI_DMA_TODEVICE);
-
-		ctxdesc->dw[0] = 0;
-		ctxdesc->dw[1] = 0;
-		ctxdesc->desc2.flags	= TXFLAG_OWN;
-		if(jme->dev->features & NETIF_F_HIGHDMA)
-			ctxdesc->desc2.flags |= TXFLAG_64BIT;
-		ctxdesc->desc2.datalen	= cpu_to_le16(skb->len);
-		ctxdesc->desc2.bufaddrh	= cpu_to_le32((__u64)dmaaddr >> 32);
-		ctxdesc->desc2.bufaddrl	= cpu_to_le32(
-						(__u64)dmaaddr & 0xFFFFFFFFUL);
-
-		ctxbi->mapping = dmaaddr;
-		ctxbi->len = skb->len;
-	}
-
-	ctxdesc = txdesc + idx;
-	ctxbi = txbi + idx;
-
-	ctxdesc->dw[0] = 0;
-	ctxdesc->dw[1] = 0;
-	ctxdesc->dw[2] = 0;
-	ctxdesc->dw[3] = 0;
-	ctxdesc->desc1.pktsize = cpu_to_le16(skb->len);
-	/*
-	 * Set OWN bit at final.
-	 * When kernel transmit faster than NIC.
-	 * And NIC trying to send this descriptor before we tell
-	 * it to start sending this TX queue.
-	 * Other fields are already filled correctly.
-	 */
-	wmb();
-	flags = TXFLAG_OWN | TXFLAG_INT; 
-	jme_tx_csum(skb, jme->dev->mtu, &flags);
-	jme_tx_vlan(skb, &(ctxdesc->desc1.vlan), &flags);
-	ctxdesc->desc1.flags = flags;
-	/*
-	 * Set tx buffer info after telling NIC to send
-	 * For better tx_clean timing
-	 */
-	wmb();
-	ctxbi->nr_desc = nr_desc;
-	ctxbi->skb = skb;
-
-	tx_dbg(jme->dev->name, "Xmit: %d+%d\n", idx, nr_desc);
-
-	return 0;
-}
-
-
 static int
 jme_setup_tx_resources(struct jme_adapter *jme)
 {
 	struct jme_ring *txring = &(jme->txring[0]);
 
 	txring->alloc = dma_alloc_coherent(&(jme->pdev->dev),
-					   TX_RING_ALLOC_SIZE,
-					   &(txring->dmaalloc),
-					   GFP_ATOMIC);
+				   TX_RING_ALLOC_SIZE(jme->tx_ring_size),
+				   &(txring->dmaalloc),
+				   GFP_ATOMIC);
 
 	if(!txring->alloc) {
 		txring->desc = NULL;
@@ -597,14 +464,14 @@ jme_setup_tx_resources(struct jme_adapter *jme)
 	txring->dma		= ALIGN(txring->dmaalloc, RING_DESC_ALIGN);
 	txring->next_to_use	= 0;
 	txring->next_to_clean	= 0;
-	atomic_set(&txring->nr_free, RING_DESC_NR);
+	atomic_set(&txring->nr_free, jme->tx_ring_size);
 
 	/*
-	 * Initiallize Transmit Descriptors
+	 * Initialize Transmit Descriptors
 	 */
-	memset(txring->alloc, 0, TX_RING_ALLOC_SIZE);
+	memset(txring->alloc, 0, TX_RING_ALLOC_SIZE(jme->tx_ring_size));
 	memset(txring->bufinf, 0,
-		sizeof(struct jme_buffer_info) * RING_DESC_NR);
+		sizeof(struct jme_buffer_info) * jme->tx_ring_size);
 
 	return 0;
 }
@@ -617,7 +484,7 @@ jme_free_tx_resources(struct jme_adapter *jme)
 	struct jme_buffer_info *txbi = txring->bufinf;
 
 	if(txring->alloc) {
-		for(i = 0 ; i < RING_DESC_NR ; ++i) {
+		for(i = 0 ; i < jme->tx_ring_size ; ++i) {
 			txbi = txring->bufinf + i;
 			if(txbi->skb) {
 				dev_kfree_skb(txbi->skb);
@@ -629,7 +496,7 @@ jme_free_tx_resources(struct jme_adapter *jme)
 		}
 
 		dma_free_coherent(&(jme->pdev->dev),
-				  TX_RING_ALLOC_SIZE,
+				  TX_RING_ALLOC_SIZE(jme->tx_ring_size),
 				  txring->alloc,
 				  txring->dmaalloc);
 
@@ -662,7 +529,7 @@ jme_enable_tx_engine(struct jme_adapter *jme)
 	/*
 	 * Setup TX Descptor Count
 	 */
-	jwrite32(jme, JME_TXQDC, RING_DESC_NR);
+	jwrite32(jme, JME_TXQDC, jme->tx_ring_size);
 
 	/*
 	 * Enable TX Engine
@@ -736,7 +603,7 @@ static int
 jme_make_new_rx_buf(struct jme_adapter *jme, int i)
 {
 	struct jme_ring *rxring = &(jme->rxring[0]);
-	struct jme_buffer_info *rxbi = rxring->bufinf;
+	struct jme_buffer_info *rxbi = rxring->bufinf + i;
 	unsigned long offset;
 	struct sk_buff* skb;
 
@@ -745,26 +612,18 @@ jme_make_new_rx_buf(struct jme_adapter *jme, int i)
 	if(unlikely(!skb))
 		return -ENOMEM;
 
-	if(unlikely(skb_is_nonlinear(skb))) {
-		dprintk(jme->dev->name,
-			"Allocated skb fragged(%d).\n",
-			skb_shinfo(skb)->nr_frags);
-		dev_kfree_skb(skb);
-		return -ENOMEM;
-	}
-
 	if(unlikely(offset =
 			(unsigned long)(skb->data)
 			& ((unsigned long)RX_BUF_DMA_ALIGN - 1)))
 		skb_reserve(skb, RX_BUF_DMA_ALIGN - offset);
 
-	rxbi += i;
 	rxbi->skb = skb;
 	rxbi->len = skb_tailroom(skb);
-	rxbi->mapping = pci_map_single(jme->pdev,
-				       skb->data,
-				       rxbi->len,
-				       PCI_DMA_FROMDEVICE);
+	rxbi->mapping = pci_map_page(jme->pdev,
+					virt_to_page(skb->data),
+					offset_in_page(skb->data),
+					rxbi->len,
+					PCI_DMA_FROMDEVICE);
 
 	return 0;
 }
@@ -777,7 +636,7 @@ jme_free_rx_buf(struct jme_adapter *jme, int i)
 	rxbi += i;
 
 	if(rxbi->skb) {
-		pci_unmap_single(jme->pdev,
+		pci_unmap_page(jme->pdev,
 				 rxbi->mapping,
 				 rxbi->len,
 				 PCI_DMA_FROMDEVICE);
@@ -795,11 +654,11 @@ jme_free_rx_resources(struct jme_adapter *jme)
 	struct jme_ring *rxring = &(jme->rxring[0]);
 
 	if(rxring->alloc) {
-		for(i = 0 ; i < RING_DESC_NR ; ++i)
+		for(i = 0 ; i < jme->rx_ring_size ; ++i)
 			jme_free_rx_buf(jme, i);
 
 		dma_free_coherent(&(jme->pdev->dev),
-				  RX_RING_ALLOC_SIZE,
+				  RX_RING_ALLOC_SIZE(jme->rx_ring_size),
 				  rxring->alloc,
 				  rxring->dmaalloc);
 		rxring->alloc    = NULL;
@@ -818,9 +677,9 @@ jme_setup_rx_resources(struct jme_adapter *jme)
 	struct jme_ring *rxring = &(jme->rxring[0]);
 
 	rxring->alloc = dma_alloc_coherent(&(jme->pdev->dev),
-					   RX_RING_ALLOC_SIZE,
-					   &(rxring->dmaalloc),
-					   GFP_ATOMIC);
+				   RX_RING_ALLOC_SIZE(jme->rx_ring_size),
+				   &(rxring->dmaalloc),
+				   GFP_ATOMIC);
 	if(!rxring->alloc) {
 		rxring->desc = NULL;
 		rxring->dmaalloc = 0;
@@ -840,7 +699,7 @@ jme_setup_rx_resources(struct jme_adapter *jme)
 	/*
 	 * Initiallize Receive Descriptors
 	 */
-	for(i = 0 ; i < RING_DESC_NR ; ++i) {
+	for(i = 0 ; i < jme->rx_ring_size ; ++i) {
 		if(unlikely(jme_make_new_rx_buf(jme, i))) {
 			jme_free_rx_resources(jme);
 			return -ENOMEM;
@@ -863,9 +722,9 @@ jme_enable_rx_engine(struct jme_adapter *jme)
 	jwrite32(jme, JME_RXNDA, (__u64)jme->rxring[0].dma & 0xFFFFFFFFUL);
 
 	/*
-	 * Setup RX Descptor Count
+	 * Setup RX Descriptor Count
 	 */
-	jwrite32(jme, JME_RXQDC, RING_DESC_NR);
+	jwrite32(jme, JME_RXQDC, jme->rx_ring_size);
 
 	/*
 	 * Setup Unicast Filter
@@ -960,13 +819,24 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 		else
 			skb->ip_summed = CHECKSUM_NONE;
 
-		if(jme->vlgrp && (rxdesc->descwb.flags & RXWBFLAG_TAGON))
-			vlan_hwaccel_rx(skb, jme->vlgrp,
-					le32_to_cpu(rxdesc->descwb.vlan));
-		else
-			netif_rx(skb);
 
-		if(le16_to_cpu(rxdesc->descwb.flags) & RXWBFLAG_DEST_MUL)
+		if(rxdesc->descwb.flags & RXWBFLAG_TAGON) {
+			vlan_dbg(jme->dev->name, "VLAN: %04x\n",
+					rxdesc->descwb.vlan);
+			if(jme->vlgrp) {
+				vlan_dbg(jme->dev->name,
+					"VLAN Passed to kernel.\n");
+				vlan_hwaccel_rx(skb, jme->vlgrp,
+					le32_to_cpu(rxdesc->descwb.vlan));
+				NET_STAT(jme).rx_bytes += 4;
+			}
+		}
+		else {
+			netif_rx(skb);
+		}
+
+		if((le16_to_cpu(rxdesc->descwb.flags) & RXWBFLAG_DEST) ==
+				RXWBFLAG_DEST_MUL)
 			++(NET_STAT(jme).multicast);
 
 		jme->dev->last_rx = jiffies;
@@ -993,7 +863,7 @@ jme_rxsum_bad(struct jme_adapter *jme, __u16 flags)
 	}
 	else if(unlikely((flags & RXWBFLAG_IPV4) &&
 	!(flags & RXWBFLAG_IPCS))) {
-		csum_dbg(jme->dev->name, "IPV4 Checksum error.\n");
+		csum_dbg(jme->dev->name, "IPv4 Checksum error.\n");
 		return 1;
 	}
 	else {
@@ -1006,7 +876,7 @@ jme_process_receive(struct jme_adapter *jme, int limit)
 {
 	struct jme_ring *rxring = &(jme->rxring[0]);
 	volatile struct rxdesc *rxdesc = rxring->desc;
-	int i, j, ccnt, desccnt;
+	int i, j, ccnt, desccnt, mask = jme->rx_ring_mask;
 
 	i = rxring->next_to_clean;
 	while( limit-- > 0 )
@@ -1044,8 +914,7 @@ jme_process_receive(struct jme_adapter *jme, int limit)
 			for(j = i, ccnt = desccnt ; ccnt-- ; ) {
 				jme_set_clean_rxdesc(jme, j);
 
-				if(unlikely(++j == RING_DESC_NR))
-					j = 0;
+				j = (j + 1) & (mask);
 			}
 
 		}
@@ -1053,8 +922,7 @@ jme_process_receive(struct jme_adapter *jme, int limit)
 			jme_alloc_and_feed_skb(jme, i);
 		}
 
-		if((i += desccnt) >= RING_DESC_NR)
-			i -= RING_DESC_NR;
+		i = (i + desccnt) & (mask);
 	}
 
 out:
@@ -1129,7 +997,7 @@ jme_pcc_tasklet(unsigned long arg)
 	struct net_device *netdev = jme->dev;
 
 
-	if(unlikely(netif_queue_stopped(netdev) ||
+	if(unlikely(!netif_carrier_ok(netdev) ||
 		(atomic_read(&jme->link_changing) != 1)
 	)) {
 		jme_stop_pcc_timer(jme);
@@ -1219,10 +1087,10 @@ jme_rx_clean_tasklet(unsigned long arg)
 	if(unlikely(atomic_read(&jme->link_changing) != 1))
 		goto out;
 
-	if(unlikely(netif_queue_stopped(jme->dev)))
+	if(unlikely(!netif_carrier_ok(jme->dev)))
 		goto out;
 
-	jme_process_receive(jme, RING_DESC_NR);
+	jme_process_receive(jme, jme->rx_ring_size);
 	++(dpi->intr_cnt);
 
 out:
@@ -1237,13 +1105,29 @@ jme_rx_empty_tasklet(unsigned long arg)
 	if(unlikely(atomic_read(&jme->link_changing) != 1))
 		return;
 
-	if(unlikely(netif_queue_stopped(jme->dev)))
+	if(unlikely(!netif_carrier_ok(jme->dev)))
 		return;
 
-	queue_dbg(jme->dev->name, "RX Queue empty!\n");
+	queue_dbg(jme->dev->name, "RX Queue Full!\n");
 
 	jme_rx_clean_tasklet(arg);
 	jme_restart_rx_engine(jme);
+}
+
+static void
+jme_wake_queue_if_stopped(struct jme_adapter *jme)
+{
+	struct jme_ring *txring = jme->txring;
+
+	smp_wmb();
+	if(unlikely(netif_queue_stopped(jme->dev) &&
+	atomic_read(&txring->nr_free) >= (jme->tx_wake_threshold))) {
+
+		queue_dbg(jme->dev->name, "TX Queue Waked.\n");
+		netif_wake_queue(jme->dev);
+
+	}
+
 }
 
 static void
@@ -1253,7 +1137,7 @@ jme_tx_clean_tasklet(unsigned long arg)
 	struct jme_ring *txring = &(jme->txring[0]);
 	volatile struct txdesc *txdesc = txring->desc;
 	struct jme_buffer_info *txbi = txring->bufinf, *ctxbi, *ttxbi;
-	int i, j, cnt = 0, max, err;
+	int i, j, cnt = 0, max, err, mask;
 
 	if(unlikely(!atomic_dec_and_test(&jme->tx_cleaning)))
 		goto out;
@@ -1261,10 +1145,11 @@ jme_tx_clean_tasklet(unsigned long arg)
 	if(unlikely(atomic_read(&jme->link_changing) != 1))
 		goto out;
 
-	if(unlikely(netif_queue_stopped(jme->dev)))
+	if(unlikely(!netif_carrier_ok(jme->dev)))
 		goto out;
 
-	max = RING_DESC_NR - atomic_read(&txring->nr_free);
+	max = jme->tx_ring_size - atomic_read(&txring->nr_free);
+	mask = jme->tx_ring_mask;
 
 	tx_dbg(jme->dev->name, "Tx Tasklet: In\n");
 
@@ -1272,7 +1157,8 @@ jme_tx_clean_tasklet(unsigned long arg)
 
 		ctxbi = txbi + i;
 
-		if(ctxbi->skb && !(txdesc[i].descwb.flags & TXWBFLAG_OWN)) {
+		if(likely(ctxbi->skb &&
+		!(txdesc[i].descwb.flags & TXWBFLAG_OWN))) {
 
 			err = txdesc[i].descwb.flags & TXWBFLAG_ALLERR;
 
@@ -1281,45 +1167,45 @@ jme_tx_clean_tasklet(unsigned long arg)
 				i, ctxbi->nr_desc);
 
 			for(j = 1 ; j < ctxbi->nr_desc ; ++j) {
-				ttxbi = txbi + ((i + j) & (RING_DESC_NR - 1));
-				txdesc[(i+j)&(RING_DESC_NR-1)].dw[0] = 0;
+				ttxbi = txbi + ((i + j) & (mask));
+				txdesc[(i + j) & (mask)].dw[0] = 0;
 
-				pci_unmap_single(jme->pdev,
+				pci_unmap_page(jme->pdev,
 						 ttxbi->mapping,
 						 ttxbi->len,
 						 PCI_DMA_TODEVICE);
-
-				if(likely(!err))
-					NET_STAT(jme).tx_bytes += ttxbi->len;
 
 				ttxbi->mapping = 0;
 				ttxbi->len = 0;
 			}
 
 			dev_kfree_skb(ctxbi->skb);
-			ctxbi->skb = NULL;
 
 			cnt += ctxbi->nr_desc;
 
 			if(unlikely(err))
 				++(NET_STAT(jme).tx_carrier_errors);
-			else
+			else {
 				++(NET_STAT(jme).tx_packets);
+				NET_STAT(jme).tx_bytes += ctxbi->len;
+			}
+
+			ctxbi->skb = NULL;
+			ctxbi->len = 0;
 		}
 		else {
 			if(!ctxbi->skb)
 				tx_dbg(jme->dev->name,
 					"Tx Tasklet:"
-					" Stoped due to no skb.\n");
+					" Stopped due to no skb.\n");
 			else
 				tx_dbg(jme->dev->name,
 					"Tx Tasklet:"
-					"Stoped due to not done.\n");
+					"Stopped due to not done.\n");
 			break;
 		}
 
-		if(unlikely((i += ctxbi->nr_desc) >= RING_DESC_NR))
-			i -= RING_DESC_NR;
+		i = (i + ctxbi->nr_desc) & mask;
 
 		ctxbi->nr_desc = 0;
 	}
@@ -1331,6 +1217,8 @@ jme_tx_clean_tasklet(unsigned long arg)
 
 	atomic_add(cnt, &txring->nr_free);
 
+	jme_wake_queue_if_stopped(jme);
+
 out:
 	atomic_inc(&jme->tx_cleaning);
 }
@@ -1338,6 +1226,8 @@ out:
 static void
 jme_intr_msi(struct jme_adapter *jme, __u32 intrstat)
 {
+	__u32 handled;
+
 	/*
 	 * Disable interrupt
 	 */
@@ -1365,11 +1255,15 @@ jme_intr_msi(struct jme_adapter *jme, __u32 intrstat)
 	if(intrstat & (INTR_PCCTXTO | INTR_PCCTX))
 		tasklet_schedule(&jme->txclean_task);
 
-        if((intrstat & ~INTR_ENABLE) != 0) {
+	handled = INTR_ENABLE | INTR_RX0 | INTR_TX0 | INTR_PAUSERCV;
+        if((intrstat & ~(handled)) != 0) {
 		/*
 		 * Some interrupt not handled
 		 * but not enabled also (for debug)
 		 */
+		dprintk(jme->dev->name,
+			"UN-handled interrupt.(%08x)\n",
+			intrstat & ~(handled));
 	}
 
 out_reenable:
@@ -1464,7 +1358,7 @@ jme_request_irq(struct jme_adapter *jme)
                           netdev);
         if(rc) {
                 jeprintk(netdev->name,
-			"Unable to allocate %s interrupt (return: %d)\n",
+			"Unable to request %s interrupt (return: %d)\n",
 			jme->flags & JME_FLAG_MSI ? "MSI":"INTx", rc);
 
                 if(jme->flags & JME_FLAG_MSI) {
@@ -1580,19 +1474,239 @@ jme_close(struct net_device *netdev)
 	jme_free_rx_resources(jme);
 	jme_free_tx_resources(jme);
 	jme->phylink = 0;
+	jme_phy_off(jme);
 
-	if(jme->reg_pmcs) {
-		jme_set_100m_half(jme);
-		pci_enable_wake(jme->pdev, PCI_D0, true);
-		pci_enable_wake(jme->pdev, PCI_D3hot, true);
-		pci_enable_wake(jme->pdev, PCI_D3cold, true);
-		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
+	return 0;
+}
+
+static int
+jme_alloc_txdesc(struct jme_adapter *jme,
+			struct sk_buff *skb)
+{
+	struct jme_ring *txring = jme->txring;
+	int idx, nr_alloc, mask = jme->tx_ring_mask;
+
+	idx = txring->next_to_use;
+	nr_alloc = skb_shinfo(skb)->nr_frags + 2;
+
+	if(unlikely(atomic_read(&txring->nr_free) < nr_alloc))
+		return -1;
+
+	atomic_sub(nr_alloc, &txring->nr_free);
+
+	txring->next_to_use = (txring->next_to_use + nr_alloc) & mask;
+
+	return idx;
+}
+
+static void
+jme_fill_tx_map(struct pci_dev *pdev,
+		volatile struct txdesc *txdesc,
+		struct jme_buffer_info *txbi,
+		struct page *page,
+		__u32 page_offset,
+		__u32 len,
+		__u8 hidma)
+{
+	dma_addr_t dmaaddr;
+
+	dmaaddr = pci_map_page(pdev,
+				page,
+				page_offset,
+				len,
+				PCI_DMA_TODEVICE);
+
+	pci_dma_sync_single_for_device(pdev,
+				       dmaaddr,
+				       len,
+				       PCI_DMA_TODEVICE);
+
+	txdesc->dw[0] = 0;
+	txdesc->dw[1] = 0;
+	txdesc->desc2.flags	= TXFLAG_OWN;
+	txdesc->desc2.flags	|= (hidma)?TXFLAG_64BIT:0;
+	txdesc->desc2.datalen	= cpu_to_le16(len);
+	txdesc->desc2.bufaddrh	= cpu_to_le32((__u64)dmaaddr >> 32);
+	txdesc->desc2.bufaddrl	= cpu_to_le32(
+					(__u64)dmaaddr & 0xFFFFFFFFUL);
+
+	txbi->mapping = dmaaddr;
+	txbi->len = len;
+}
+
+static void
+jme_map_tx_skb(struct jme_adapter *jme, struct sk_buff *skb, int idx)
+{
+	struct jme_ring *txring = jme->txring;
+	volatile struct txdesc *txdesc = txring->desc, *ctxdesc;
+	struct jme_buffer_info *txbi = txring->bufinf, *ctxbi;
+	__u8 hidma = jme->dev->features & NETIF_F_HIGHDMA;
+	int i, nr_frags = skb_shinfo(skb)->nr_frags;
+	int mask = jme->tx_ring_mask;
+	struct skb_frag_struct *frag;
+	__u32 len;
+
+	for(i = 0 ; i < nr_frags ; ++i) {
+                frag = &skb_shinfo(skb)->frags[i];
+		ctxdesc = txdesc + ((idx + i + 2) & (mask));
+		ctxbi = txbi + ((idx + i + 2) & (mask));
+
+		jme_fill_tx_map(jme->pdev, ctxdesc, ctxbi, frag->page,
+				 frag->page_offset, frag->size, hidma);
 	}
-	else {
-		jme_phy_off(jme);
+
+	len = skb_is_nonlinear(skb)?skb_headlen(skb):skb->len;
+	ctxdesc = txdesc + ((idx + 1) & (mask));
+	ctxbi = txbi + ((idx + 1) & (mask));
+	jme_fill_tx_map(jme->pdev, ctxdesc, ctxbi, virt_to_page(skb->data),
+			offset_in_page(skb->data), len, hidma);
+
+}
+
+static int
+jme_expand_header(struct jme_adapter *jme, struct sk_buff *skb)
+{
+	if(unlikely(skb_shinfo(skb)->gso_size &&
+			skb_header_cloned(skb) &&
+			pskb_expand_head(skb, 0, 0, GFP_ATOMIC))) {
+		dev_kfree_skb(skb);
+		return -1;
 	}
 
 	return 0;
+}
+
+static int
+jme_tx_tso(struct sk_buff *skb,
+		volatile __u16 *mss, __u8 *flags)
+{
+	if((*mss = (skb_shinfo(skb)->gso_size << TXDESC_MSS_SHIFT))) {
+		*flags |= TXFLAG_LSEN;
+
+		if(skb->protocol == __constant_htons(ETH_P_IP)) {
+			struct iphdr *iph = ip_hdr(skb);
+
+			iph->check = 0;
+                        tcp_hdr(skb)->check = ~csum_tcpudp_magic(iph->saddr,
+								iph->daddr, 0,
+								IPPROTO_TCP,
+								0);
+		}
+		else {
+			struct ipv6hdr *ip6h = ipv6_hdr(skb);
+
+                        tcp_hdr(skb)->check = ~csum_ipv6_magic(&ip6h->saddr,
+								&ip6h->daddr, 0,
+								IPPROTO_TCP,
+								0);
+		}
+
+		return 0;
+	}
+
+	return 1;
+}
+
+static void
+jme_tx_csum(struct sk_buff *skb, __u8 *flags)
+{
+	if(skb->ip_summed == CHECKSUM_PARTIAL) {
+		__u8 ip_proto;
+
+		switch (skb->protocol) {
+		case __constant_htons(ETH_P_IP):
+			ip_proto = ip_hdr(skb)->protocol;
+			break;
+		case __constant_htons(ETH_P_IPV6):
+			ip_proto = ipv6_hdr(skb)->nexthdr;
+			break;
+		default:
+			ip_proto = 0;
+			break;
+		}
+
+		switch(ip_proto) {
+		case IPPROTO_TCP:
+			*flags |= TXFLAG_TCPCS;
+			break;
+		case IPPROTO_UDP:
+			*flags |= TXFLAG_UDPCS;
+			break;
+		default:
+			jeprintk("jme", "Error upper layer protocol.\n");
+			break;
+		}
+	}
+}
+
+__always_inline static void
+jme_tx_vlan(struct sk_buff *skb, volatile __u16 *vlan, __u8 *flags)
+{
+	if(vlan_tx_tag_present(skb)) {
+		vlan_dbg("jme", "Tag found!(%04x)\n", vlan_tx_tag_get(skb));
+		*flags |= TXFLAG_TAGON;
+		*vlan = vlan_tx_tag_get(skb);
+	}
+}
+
+static int
+jme_fill_first_tx_desc(struct jme_adapter *jme, struct sk_buff *skb, int idx)
+{
+	struct jme_ring *txring = jme->txring;
+	volatile struct txdesc *txdesc;
+	struct jme_buffer_info *txbi;
+	__u8 flags;
+
+	txdesc = (volatile struct txdesc*)txring->desc + idx;
+	txbi = txring->bufinf + idx;
+
+	txdesc->dw[0] = 0;
+	txdesc->dw[1] = 0;
+	txdesc->dw[2] = 0;
+	txdesc->dw[3] = 0;
+	txdesc->desc1.pktsize = cpu_to_le16(skb->len);
+	/*
+	 * Set OWN bit at final.
+	 * When kernel transmit faster than NIC.
+	 * And NIC trying to send this descriptor before we tell
+	 * it to start sending this TX queue.
+	 * Other fields are already filled correctly.
+	 */
+	wmb();
+	flags = TXFLAG_OWN | TXFLAG_INT;
+	//Set checksum flags while not tso
+	if(jme_tx_tso(skb, &txdesc->desc1.mss, &flags))
+		jme_tx_csum(skb, &flags);
+	jme_tx_vlan(skb, &txdesc->desc1.vlan, &flags);
+	txdesc->desc1.flags = flags;
+	/*
+	 * Set tx buffer info after telling NIC to send
+	 * For better tx_clean timing
+	 */
+	wmb();
+	txbi->nr_desc = skb_shinfo(skb)->nr_frags + 2;
+	txbi->skb = skb;
+	txbi->len = skb->len;
+
+	return 0;
+}
+
+static void
+jme_stop_queue_if_full(struct jme_adapter *jme)
+{
+	struct jme_ring *txring = jme->txring;
+
+	smp_wmb();
+	if(unlikely(atomic_read(&txring->nr_free) < (MAX_SKB_FRAGS+2))) {
+		netif_stop_queue(jme->dev);
+		queue_dbg(jme->dev->name, "TX Queue Paused.\n");
+		smp_wmb();
+		if (atomic_read(&txring->nr_free) >= (jme->tx_wake_threshold)) {
+			netif_wake_queue(jme->dev);
+			queue_dbg(jme->dev->name, "TX Queue Fast Waked.\n");
+		}
+	}
+
 }
 
 /*
@@ -1602,31 +1716,44 @@ static int
 jme_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
         struct jme_adapter *jme = netdev_priv(netdev);
-	int rc;
+	int idx;
 
-	if(unlikely(netif_queue_stopped(jme->dev)))
-		return NETDEV_TX_BUSY;
+	if(skb_shinfo(skb)->nr_frags) {
+		tx_dbg(netdev->name, "Frags: %d Headlen: %d Len: %d MSS: %d Sum:%d\n",
+			skb_shinfo(skb)->nr_frags,
+			skb_headlen(skb),
+			skb->len,
+			skb_shinfo(skb)->gso_size,
+			skb->ip_summed);
+	}
 
-#if 0
-/*Testing*/
-	("jme", "Frags: %d Headlen: %d Len: %d Sum:%d\n", 
-		skb_shinfo(skb)->nr_frags,
-		skb_headlen(skb),
-		skb->len,
-		skb->ip_summed);
-/*********/
-#endif
+	if(unlikely(jme_expand_header(jme, skb))) {
+		++(NET_STAT(jme).tx_dropped);
+		return NETDEV_TX_OK;
+	}
 
-	rc = jme_set_new_txdesc(jme, skb);
+	idx = jme_alloc_txdesc(jme, skb);
 
-	if(unlikely(rc != NETDEV_TX_OK))
-		return rc;
+	if(unlikely(idx<0)) {
+		netif_stop_queue(netdev);
+		jeprintk(netdev->name,
+				"BUG! Tx ring full when queue awake!\n");
+
+                return NETDEV_TX_BUSY;
+	}
+
+	jme_map_tx_skb(jme, skb, idx);
+	jme_fill_first_tx_desc(jme, skb, idx);
+
+	tx_dbg(jme->dev->name, "Xmit: %d+%d\n", idx, skb_shinfo(skb)->nr_frags + 2);
 
 	jwrite32(jme, JME_TXCS, jme->reg_txcs |
 				TXCS_SELECT_QUEUE0 |
 				TXCS_QUEUE0S |
 				TXCS_ENABLE);
 	netdev->trans_start = jiffies;
+
+	jme_stop_queue_if_full(jme);
 
         return NETDEV_TX_OK;
 }
@@ -1722,10 +1849,15 @@ jme_change_mtu(struct net_device *netdev, int new_mtu)
 	}
 
 	if(new_mtu > 1900) {
-		netdev->features &= ~NETIF_F_HW_CSUM;
+		netdev->features &= ~(NETIF_F_HW_CSUM |
+				NETIF_F_TSO |
+				NETIF_F_TSO6);
 	}
 	else {
-		netdev->features |= NETIF_F_HW_CSUM;
+		if(jme->flags & JME_FLAG_TXCSUM)
+			netdev->features |= NETIF_F_HW_CSUM;
+		if(jme->flags & JME_FLAG_TSO)
+			netdev->features |= NETIF_F_TSO | NETIF_F_TSO6;
 	}
 
         netdev->mtu = new_mtu;
@@ -1741,7 +1873,7 @@ jme_tx_timeout(struct net_device *netdev)
 
 	/*
 	 * Reset the link
-	 * And the link change will reinitiallize all RX/TX resources
+	 * And the link change will reinitialize all RX/TX resources
 	 */
 	jme->phylink = 0;
 	jme_reset_link(jme);
@@ -1833,46 +1965,6 @@ jme_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 	return 0;
 }
 
-/*
- * It's not actually for coalesce.
- * It changes internell FIFO related setting for testing.
- */
-static int
-jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
-{
-	struct jme_adapter *jme = netdev_priv(netdev);
-
-	if(ecmd->use_adaptive_rx_coalesce &&
-	ecmd->use_adaptive_tx_coalesce &&
-	ecmd->rx_coalesce_usecs == 250 &&
-	(ecmd->rx_max_coalesced_frames_low == 16 ||
-	ecmd->rx_max_coalesced_frames_low == 32 ||
-	ecmd->rx_max_coalesced_frames_low == 64 ||
-	ecmd->rx_max_coalesced_frames_low == 128)) {
-		jme->reg_rxcs &= ~RXCS_FIFOTHNP;
-		switch(ecmd->rx_max_coalesced_frames_low) {
-		case 16:
-			jme->reg_rxcs |= RXCS_FIFOTHNP_16QW;
-			break;
-		case 32:
-			jme->reg_rxcs |= RXCS_FIFOTHNP_32QW;
-			break;
-		case 64:
-			jme->reg_rxcs |= RXCS_FIFOTHNP_64QW;
-			break;
-		case 128:
-		default:
-			jme->reg_rxcs |= RXCS_FIFOTHNP_128QW;
-		}
-		jme_restart_rx_engine(jme);
-	}
-	else {
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 static void
 jme_get_pauseparam(struct net_device *netdev,
 			struct ethtool_pauseparam *ecmd)
@@ -1887,7 +1979,9 @@ jme_get_pauseparam(struct net_device *netdev,
 	spin_lock_irqsave(&jme->phy_lock, flags);
         val = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_ADVERTISE);
 	spin_unlock_irqrestore(&jme->phy_lock, flags);
-	ecmd->autoneg = (val & (ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM)) != 0;
+
+	ecmd->autoneg =
+		(val & (ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM)) != 0;
 }
 
 static int
@@ -1924,7 +2018,7 @@ jme_set_pauseparam(struct net_device *netdev,
 
 	spin_lock_irqsave(&jme->phy_lock, flags);
         val = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_ADVERTISE);
-	if( ((val & (ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM)) != 0) != 
+	if( ((val & (ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM)) != 0) !=
 		(ecmd->autoneg != 0)) {
 
 		if(ecmd->autoneg)
@@ -1932,7 +2026,8 @@ jme_set_pauseparam(struct net_device *netdev,
 		else
 			val &= ~(ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM);
 
-		jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_ADVERTISE, val);
+		jme_mdio_write(jme->dev, jme->mii_if.phy_id,
+				MII_ADVERTISE, val);
 	}
 	spin_unlock_irqrestore(&jme->phy_lock, flags);
 
@@ -1981,7 +2076,7 @@ jme_set_wol(struct net_device *netdev,
 
 	return 0;
 }
- 
+
 static int
 jme_get_settings(struct net_device *netdev,
 		     struct ethtool_cmd *ecmd)
@@ -2047,7 +2142,7 @@ jme_set_rx_csum(struct net_device *netdev, u32 on)
 {
         struct jme_adapter *jme = netdev_priv(netdev);
 	unsigned long flags;
-	
+
 	spin_lock_irqsave(&jme->rxmcs_lock, flags);
 	if(on)
 		jme->reg_rxmcs |= RXMCS_CHECKSUM;
@@ -2062,12 +2157,37 @@ jme_set_rx_csum(struct net_device *netdev, u32 on)
 static int
 jme_set_tx_csum(struct net_device *netdev, u32 on)
 {
-	if(on && netdev->mtu <= 1900)
-		netdev->features |= NETIF_F_HW_CSUM;
-	else
+        struct jme_adapter *jme = netdev_priv(netdev);
+
+	if(on) {
+		jme->flags |= JME_FLAG_TXCSUM;
+		if(netdev->mtu <= 1900)
+			netdev->features |= NETIF_F_HW_CSUM;
+	}
+	else {
+		jme->flags &= ~JME_FLAG_TXCSUM;
 		netdev->features &= ~NETIF_F_HW_CSUM;
+	}
 
 	return 0;
+}
+
+static int
+jme_set_tso(struct net_device *netdev, u32 on)
+{
+        struct jme_adapter *jme = netdev_priv(netdev);
+
+        if (on) {
+		jme->flags |= JME_FLAG_TSO;
+		if(netdev->mtu <= 1900)
+			netdev->features |= NETIF_F_TSO | NETIF_F_TSO6;
+	}
+        else {
+		jme->flags &= ~JME_FLAG_TSO;
+                netdev->features &= ~(NETIF_F_TSO | NETIF_F_TSO6);
+	}
+
+        return 0;
 }
 
 static int
@@ -2083,7 +2203,6 @@ static const struct ethtool_ops jme_ethtool_ops = {
 	.get_regs_len		= jme_get_regs_len,
 	.get_regs		= jme_get_regs,
 	.get_coalesce		= jme_get_coalesce,
-	.set_coalesce		= jme_set_coalesce,
         .get_pauseparam		= jme_get_pauseparam,
         .set_pauseparam		= jme_set_pauseparam,
 	.get_wol		= jme_get_wol,
@@ -2094,6 +2213,8 @@ static const struct ethtool_ops jme_ethtool_ops = {
 	.get_rx_csum		= jme_get_rx_csum,
 	.set_rx_csum		= jme_set_rx_csum,
 	.set_tx_csum		= jme_set_tx_csum,
+	.set_tso		= jme_set_tso,
+	.set_sg			= ethtool_op_set_sg,
 	.nway_reset             = jme_nway_reset,
 };
 
@@ -2186,6 +2307,9 @@ jme_init_one(struct pci_dev *pdev,
 	netdev->vlan_rx_register	= jme_vlan_rx_register;
 	NETDEV_GET_STATS(netdev, &jme_get_stats);
 	netdev->features		=	NETIF_F_HW_CSUM |
+						NETIF_F_SG |
+						NETIF_F_TSO |
+						NETIF_F_TSO6 |
 						NETIF_F_HW_VLAN_TX |
 						NETIF_F_HW_VLAN_RX;
 	if(using_dac)
@@ -2202,6 +2326,11 @@ jme_init_one(struct pci_dev *pdev,
 	jme->dev = netdev;
 	jme->old_mtu = netdev->mtu = 1500;
 	jme->phylink = 0;
+	jme->tx_ring_size = 1 << 10;
+	jme->tx_ring_mask = jme->tx_ring_size - 1;
+	jme->tx_wake_threshold = 1 << 9;
+	jme->rx_ring_size = 1 << 9;
+	jme->rx_ring_mask = jme->rx_ring_size - 1;
 	jme->regs = ioremap(pci_resource_start(pdev, 0),
 			     pci_resource_len(pdev, 0));
 	if (!(jme->regs)) {
@@ -2253,7 +2382,8 @@ jme_init_one(struct pci_dev *pdev,
 	jme->reg_rxcs = RXCS_DEFAULT;
 	jme->reg_rxmcs = RXMCS_DEFAULT;
 	jme->reg_txpfc = 0;
-	jme->reg_pmcs = 0;
+	jme->reg_pmcs = PMCS_LFEN | PMCS_LREN | PMCS_MFEN;
+	jme->flags = JME_FLAG_TXCSUM | JME_FLAG_TSO;
 	/*
 	 * Get Max Read Req Size from PCI Config Space
 	 */
@@ -2281,7 +2411,7 @@ jme_init_one(struct pci_dev *pdev,
 	rc = jme_reload_eeprom(jme);
 	if(rc) {
 		printk(KERN_ERR PFX
-			"Rload eeprom for reading MAC Address error.\n");
+			"Reload eeprom for reading MAC Address error.\n");
 		goto err_out_free_shadow;
 	}
 	jme_load_macaddr(netdev);

@@ -24,7 +24,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"0.8"
+#define DRV_VERSION	"0.9"
 #define PFX DRV_NAME	": "
 
 #ifdef DEBUG
@@ -56,6 +56,12 @@
 #define	csum_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
 #else
 #define csum_dbg(args...)
+#endif
+
+#ifdef VLAN_DEBUG
+#define	vlan_dbg(devname, fmt, args...) dprintk(devname, fmt, ## args)
+#else
+#define vlan_dbg(args...)
 #endif
 
 #define jprintk(devname, fmt, args...) \
@@ -112,8 +118,8 @@ struct dynpcc_info {
 #define PCC_P3_THRESHOLD 3*1024*1024
 #define PCC_P2_THRESHOLD 800
 #define PCC_INTR_THRESHOLD 800
-#define PCC_TX_TO 100
-#define PCC_TX_CNT 16
+#define PCC_TX_TO 333
+#define PCC_TX_CNT 8
 
 /*
  * TX/RX Descriptors
@@ -121,13 +127,11 @@ struct dynpcc_info {
  * TX/RX Ring DESC Count Must be multiple of 16
  * RX Ring DESC Count Must be <= 1024
  */
-#define RING_DESC_NR		512	/* Must be power of 2 */
 #define RING_DESC_ALIGN		16	/* Descriptor alignment */
 
 #define TX_DESC_SIZE		16
 #define TX_RING_NR		8
-#define TX_RING_ALLOC_SIZE	(RING_DESC_NR * TX_DESC_SIZE) + TX_DESC_SIZE
-#define TX_RING_SIZE		(RING_DESC_NR * TX_DESC_SIZE)
+#define TX_RING_ALLOC_SIZE(s)	(s * TX_DESC_SIZE) + RING_DESC_ALIGN
 
 struct txdesc {
 	union {
@@ -196,6 +200,7 @@ enum jme_txdesc_flags_bits {
 	TXFLAG_LSEN	= 0x02,
 	TXFLAG_TAGON	= 0x01,
 };
+#define TXDESC_MSS_SHIFT	2
 enum jme_rxdescwb_flags_bits {
 	TXWBFLAG_OWN	= 0x80,
 	TXWBFLAG_INT	= 0x40,
@@ -211,8 +216,7 @@ enum jme_rxdescwb_flags_bits {
 
 #define RX_DESC_SIZE		16
 #define RX_RING_NR		4
-#define RX_RING_ALLOC_SIZE	(RING_DESC_NR * RX_DESC_SIZE) + RX_DESC_SIZE
-#define RX_RING_SIZE		(RING_DESC_NR * RX_DESC_SIZE)
+#define RX_RING_ALLOC_SIZE(s)	(s * RX_DESC_SIZE) + RING_DESC_ALIGN
 
 #define RX_BUF_DMA_ALIGN	8
 #define RX_PREPAD_SIZE		10
@@ -313,6 +317,7 @@ struct jme_buffer_info {
 	int nr_desc;
 };
 
+#define MAX_RING_DESC_NR	1024
 struct jme_ring {
         void* alloc;		/* pointer to allocated memory */
         volatile void* desc;	/* pointer to ring memory  */
@@ -320,10 +325,10 @@ struct jme_ring {
         dma_addr_t dma;		/* phys address for ring dma */
 
 	/* Buffer information corresponding to each descriptor */
-	struct jme_buffer_info bufinf[RING_DESC_NR];
+	struct jme_buffer_info bufinf[MAX_RING_DESC_NR];
 
-        u16 next_to_use;
-        u16 next_to_clean;
+        int next_to_use;
+        int next_to_clean;
 
 	atomic_t nr_free;
 };
@@ -368,6 +373,11 @@ struct jme_adapter {
 	__u32			reg_ghc;
 	__u32			reg_pmcs;
 	__u32			phylink;
+	__u32			tx_ring_size;
+	__u32			tx_ring_mask;
+	__u32			tx_wake_threshold;
+	__u32			rx_ring_size;
+	__u32			rx_ring_mask;
 	__u8			mrrs;
 	struct ethtool_cmd	old_ecmd;
 	unsigned int		old_mtu;
@@ -385,6 +395,8 @@ enum shadow_reg_val {
 enum jme_flags_bits {
 	JME_FLAG_MSI		= 0x00000001,
 	JME_FLAG_SSET		= 0x00000002,
+	JME_FLAG_TXCSUM		= 0x00000004,
+	JME_FLAG_TSO		= 0x00000008,
 };
 #define WAIT_TASKLET_TIMEOUT	500 /* 500 ms */
 #define TX_TIMEOUT		(5*HZ)
@@ -644,11 +656,25 @@ enum jme_rxmcs_bits {
 	RXMCS_VTAGRM		= 0x00000004,
 	RXMCS_PREPAD		= 0x00000002,
 	RXMCS_CHECKSUM		= 0x00000001,
-	
+
 	RXMCS_DEFAULT		= RXMCS_VTAGRM |
 				  RXMCS_PREPAD |
 				  RXMCS_FLOWCTRL |
 				  RXMCS_CHECKSUM,
+};
+
+/*
+ * Wakeup Frame setup interface registers
+ */
+#define WAKEUP_FRAME_NR	8
+#define WAKEUP_FRAME_MASK_DWNR	4
+enum jme_wfoi_bit_masks {
+	WFOI_MASK_SEL		= 0x00000070,
+	WFOI_CRC_SEL		= 0x00000008,
+	WFOI_FRAME_SEL		= 0x00000007,
+};
+enum jme_wfoi_shifts {
+	WFOI_MASK_SHIFT		= 4,
 };
 
 /*

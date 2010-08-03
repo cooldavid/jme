@@ -3,11 +3,12 @@ MODNAME := jme
 TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order
 
 DEBUG_FLAGS += -DDEBUG
-#DEBUG_FLAGS += -Wpointer-arith -Wbad-function-cast -Wsign-compare
+#DEBUG_FLAGS += -DQUEUE_DEBUG
+#DEBUG_FLAGS += -DVLAN_DEBUG
 #DEBUG_FLAGS += -DCSUM_DEBUG
 #DEBUG_FLAGS += -DTX_DEBUG
 #DEBUG_FLAGS += -DRX_DEBUG
-#DEBUG_FLAGS += -DQUEUE_DEBUG
+#DEBUG_FLAGS += -Wpointer-arith -Wbad-function-cast -Wsign-compare
 
 EXTRA_CFLAGS += -Wall -O3
 #EXTRA_CFLAGS += $(DEBUG_FLAGS)
