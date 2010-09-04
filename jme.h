@@ -41,8 +41,14 @@
 	NETIF_MSG_TX_ERR | \
 	NETIF_MSG_HW)
 
-#define jeprintk(pdev, fmt, args...) \
-	printk(KERN_ERR PFX fmt, ## args)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+#define pr_err(fmt, arg...) \
+	printk(KERN_ERR fmt, ##arg)
+#endif
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
+#define netdev_err(netdev, fmt, arg...) \
+	pr_err(fmt, ##arg)
+#endif
 
 #ifdef TX_DEBUG
 #define tx_dbg(priv, fmt, args...)					\
@@ -86,6 +92,11 @@ do {									\
 
 #define msg_hw(priv, fmt, args...) \
 	jme_msg(KERN_ERR, hw, priv, fmt, ## args)
+
+#define netif_info(priv, type, dev, fmt, args...) \
+	msg_ ## type(priv, fmt, ## args)
+#define netif_err(priv, type, dev, fmt, args...) \
+	msg_ ## type(priv, fmt, ## args)
 #endif
 
 /*
