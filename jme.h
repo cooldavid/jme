@@ -411,6 +411,23 @@ struct jme_ring {
 #define NETDEV_GET_STATS(netdev, fun_ptr) \
 	netdev->get_stats = fun_ptr
 #define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
+/*
+ * CentOS 5.5 have *_hdr helpers back-ported
+ */
+#ifdef RHEL_RELEASE_CODE
+#if RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(5,5)
+#define __DEFINE_IPHDR_HELPERS__
+#endif
+#else
+#define __DEFINE_IPHDR_HELPERS__
+#endif
+#else
+#define NET_STAT(priv) (priv->dev->stats)
+#define NETDEV_GET_STATS(netdev, fun_ptr)
+#define DECLARE_NET_DEVICE_STATS
+#endif
+
+#ifdef __DEFINE_IPHDR_HELPERS__
 static inline struct iphdr *ip_hdr(const struct sk_buff *skb)
 {
 	return skb->nh.iph;
@@ -425,10 +442,6 @@ static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
 {
 	return skb->h.th;
 }
-#else
-#define NET_STAT(priv) (priv->dev->stats)
-#define NETDEV_GET_STATS(netdev, fun_ptr)
-#define DECLARE_NET_DEVICE_STATS
 #endif
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
@@ -1306,3 +1319,4 @@ static int jme_set_settings(struct net_device *netdev,
 static void jme_set_multi(struct net_device *netdev);
 
 #endif
+
