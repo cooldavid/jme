@@ -55,7 +55,6 @@ do {									\
 } while (0)
 #endif
 
-#include <linux/version.h>
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
 #define jme_msg(msglvl, type, priv, fmt, args...) \
 	if (netif_msg_##type(priv)) \
