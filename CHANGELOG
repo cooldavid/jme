@@ -1,3 +1,8 @@
+Version 1.0.7 -- 10/19/2010
+	Source migrated to git, stop maintaining CHANGELOG.
+	The detail of changes can be found with "git log -p VERSION..VERSION"
+	example: git log -p jme-1.0.6..jme-1.0.7
+
 Version 1.0.6 -- 03/19/2010
 	* Fix memory leak while receiving packets from unregistered VLAN.
 	* Protect vlgrp structure by pause RX actions. Instead of adding
