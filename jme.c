@@ -1649,12 +1649,12 @@ err_out:
 	return rc;
 }
 
-#ifdef CONFIG_PM
 static void
 jme_set_100m_half(struct jme_adapter *jme)
 {
 	u32 bmcr, tmp;
 
+	jme_phy_on(jme);
 	bmcr = jme_mdio_read(jme->dev, jme->mii_if.phy_id, MII_BMCR);
 	tmp = bmcr & ~(BMCR_ANENABLE | BMCR_SPEED100 |
 		       BMCR_SPEED1000 | BMCR_FULLDPLX);
@@ -1682,12 +1682,26 @@ jme_wait_link(struct jme_adapter *jme)
 		phylink = jme_linkstat_from_phy(jme);
 	}
 }
-#endif
 
 static inline void
 jme_phy_off(struct jme_adapter *jme)
 {
 	jme_mdio_write(jme->dev, jme->mii_if.phy_id, MII_BMCR, BMCR_PDOWN);
+}
+
+static void
+jme_powersave_phy(struct jme_adapter *jme)
+{
+	if (jme->reg_pmcs) {
+		jme_set_100m_half(jme);
+
+		if (jme->reg_pmcs & (PMCS_LFEN | PMCS_LREN))
+			jme_wait_link(jme);
+
+		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
+	} else {
+		jme_phy_off(jme);
+	}
 }
 
 static int
@@ -3152,6 +3166,20 @@ jme_remove_one(struct pci_dev *pdev)
 
 }
 
+static void
+jme_shutdown(struct pci_dev *pdev)
+{
+	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct jme_adapter *jme = netdev_priv(netdev);
+
+	jme_powersave_phy(jme);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
+	pci_enable_wake(pdev, PCI_D3hot, true);
+#else
+	pci_pme_active(pdev, true);
+#endif
+}
+
 #ifdef CONFIG_PM
 static int
 jme_suspend(struct pci_dev *pdev, pm_message_t state)
@@ -3189,19 +3217,9 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 	tasklet_hi_enable(&jme->rxempty_task);
 
 	pci_save_state(pdev);
-	if (jme->reg_pmcs) {
-		jme_set_100m_half(jme);
-
-		if (jme->reg_pmcs & (PMCS_LFEN | PMCS_LREN))
-			jme_wait_link(jme);
-
-		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
-
-		pci_enable_wake(pdev, PCI_D3cold, true);
-	} else {
-		jme_phy_off(jme);
-	}
-	pci_set_power_state(pdev, PCI_D3cold);
+	jme_powersave_phy(jme);
+	pci_enable_wake(pdev, PCI_D3hot, true);
+	pci_set_power_state(pdev, PCI_D3hot);
 
 	return 0;
 }
@@ -3252,6 +3270,7 @@ static struct pci_driver jme_driver = {
 	.suspend        = jme_suspend,
 	.resume         = jme_resume,
 #endif /* CONFIG_PM */
+	.shutdown       = jme_shutdown,
 };
 
 static int __init
