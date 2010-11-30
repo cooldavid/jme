@@ -100,6 +100,13 @@ do {									\
 	msg_ ## type(priv, fmt, ## args)
 #endif
 
+#ifndef NETIF_F_TSO6
+#define NETIF_F_TSO6 0
+#endif
+#ifndef NETIF_F_IPV6_CSUM
+#define NETIF_F_IPV6_CSUM 0
+#endif
+
 /*
  * Extra PCI Configuration space interface
  */
