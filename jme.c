@@ -3322,7 +3322,11 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 
 	pci_save_state(pdev);
 	jme_powersave_phy(jme);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
 	pci_enable_wake(pdev, PCI_D3hot, true);
+#else
+	pci_pme_active(pdev, true);
+#endif
 	pci_set_power_state(pdev, PCI_D3hot);
 
 	return 0;
