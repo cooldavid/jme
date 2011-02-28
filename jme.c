@@ -3232,7 +3232,11 @@ jme_init_one(struct pci_dev *pdev,
 
 	jme_clear_pm(jme);
 	jme_set_phyfifo_5level(jme);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,22)
 	pci_read_config_byte(pdev, PCI_REVISION_ID, &jme->pcirev);
+#else
+	jme->pcirev = pdev->revision;
+#endif
 	if (!jme->fpgaver)
 		jme_phy_init(jme);
 	jme_phy_off(jme);
