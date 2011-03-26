@@ -276,7 +276,11 @@ jme_clear_pm(struct jme_adapter *jme)
 {
 	jwrite32(jme, JME_PMCS, 0xFFFF0000 | jme->reg_pmcs);
 	pci_set_power_state(jme->pdev, PCI_D0);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
 	pci_enable_wake(jme->pdev, PCI_D0, false);
+#else
+	device_set_wakeup_enable(&jme->pdev->dev, false);
+#endif
 }
 
 static int
@@ -2630,6 +2634,10 @@ jme_set_wol(struct net_device *netdev,
 
 	jwrite32(jme, JME_PMCS, jme->reg_pmcs);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	device_set_wakeup_enable(&jme->pdev->dev, jme->reg_pmcs);
+#endif
+
 	return 0;
 }
 
@@ -3325,8 +3333,15 @@ jme_shutdown(struct pci_dev *pdev)
 
 #ifdef CONFIG_PM
 static int
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
 jme_suspend(struct pci_dev *pdev, pm_message_t state)
+#else
+jme_suspend(struct device *dev)
+#endif
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+	struct pci_dev *pdev = to_pci_dev(dev);
+#endif
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct jme_adapter *jme = netdev_priv(netdev);
 
@@ -3358,26 +3373,37 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 	tasklet_hi_enable(&jme->rxclean_task);
 	tasklet_hi_enable(&jme->rxempty_task);
 
-	pci_save_state(pdev);
 	jme_powersave_phy(jme);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+	pci_save_state(pdev);
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
 	pci_enable_wake(pdev, PCI_D3hot, true);
 #else
 	pci_pme_active(pdev, true);
 #endif
 	pci_set_power_state(pdev, PCI_D3hot);
+#endif
 
 	return 0;
 }
 
 static int
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
 jme_resume(struct pci_dev *pdev)
+#else
+jme_resume(struct device *dev)
+#endif
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+	struct pci_dev *pdev = to_pci_dev(dev);
+#endif
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct jme_adapter *jme = netdev_priv(netdev);
 
 	jme_clear_pm(jme);
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
 	pci_restore_state(pdev);
+#endif
 
 	jme_phy_on(jme);
 	if (test_bit(JME_FLAG_SSET, &jme->flags))
@@ -3394,6 +3420,17 @@ jme_resume(struct pci_dev *pdev)
 
 	return 0;
 }
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+static SIMPLE_DEV_PM_OPS(jme_pm_ops, jme_suspend, jme_resume);
+#define JME_PM_OPS (&jme_pm_ops)
+#endif
+
+#else
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#define JME_PM_OPS NULL
+#endif
 #endif
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,24)
@@ -3411,11 +3448,13 @@ static struct pci_driver jme_driver = {
 	.id_table       = jme_pci_tbl,
 	.probe          = jme_init_one,
 	.remove         = __devexit_p(jme_remove_one),
-#ifdef CONFIG_PM
-	.suspend        = jme_suspend,
-	.resume         = jme_resume,
-#endif /* CONFIG_PM */
 	.shutdown       = jme_shutdown,
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+	.suspend        = jme_suspend,
+	.resume         = jme_resume
+#else
+	.driver.pm	= JME_PM_OPS,
+#endif
 };
 
 static int __init
