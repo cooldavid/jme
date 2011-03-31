@@ -112,6 +112,10 @@ do {									\
 #define NETIF_F_IPV6_CSUM 0
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
+#define __USE_NDO_FIX_FEATURES__
+#endif
+
 /*
  * Extra PCI Configuration space interface
  */
@@ -614,8 +618,10 @@ jme_get_stats(struct net_device *netdev)
 enum jme_flags_bits {
 	JME_FLAG_MSI		= 1,
 	JME_FLAG_SSET		= 2,
+#ifndef __USE_NDO_FIX_FEATURES__
 	JME_FLAG_TXCSUM		= 3,
 	JME_FLAG_TSO		= 4,
+#endif
 	JME_FLAG_POLL		= 5,
 	JME_FLAG_SHUTDOWN	= 6,
 };
