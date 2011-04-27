@@ -535,6 +535,13 @@ static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
 #define JME_NEW_PM_API
 #endif
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,26)
+static inline __u32 ethtool_cmd_speed(struct ethtool_cmd *ep)
+{
+	return ep->speed;
+}
+#endif
+
 /*
  * Jmac Adapter Private data
  */
