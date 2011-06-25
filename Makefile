@@ -15,10 +15,11 @@ else
 #########################
 TEMPFILES := $(MODNAME).o $(MODNAME).mod.c $(MODNAME).mod.o Module.symvers .$(MODNAME).*.cmd .tmp_versions modules.order Module.markers Modules.symvers
 
-ifeq (,$(BUILD_KERNEL))
-BUILD_KERNEL=$(shell uname -r)
+ifeq (,$(KVER))
+KVER=$(shell uname -r)
 endif
-KSRC ?= /lib/modules/$(BUILD_KERNEL)/build
+KSRC ?= /lib/modules/$(KVER)/build
+MINSTDIR ?= /lib/modules/$(KVER)/kernel/drivers/net
 
 all: modules
 	@rm -rf $(TEMPFILES)
@@ -34,7 +35,8 @@ namespacecheck: modules
 	@rm -rf $(TEMPFILES)
 
 install: modules
-	$(MAKE) -C $(KSRC) M=`pwd` modules_install
+	install -m 644 $(MODNAME).ko $(MINSTDIR)
+	depmod $(KVER) $(MINSTDIR)/$(MODNAME).ko
 
 patch:
 	@/usr/bin/diff -uar -X dontdiff ../../trunc ./ > bc.patch || echo > /dev/null
