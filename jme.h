@@ -461,10 +461,10 @@ struct jme_ring {
 	netdev->get_stats = fun_ptr
 #define DECLARE_NET_DEVICE_STATS struct net_device_stats stats;
 /*
- * CentOS 5.5 have *_hdr helpers back-ported
+ * CentOS 5.2 have *_hdr helpers back-ported
  */
 #ifdef RHEL_RELEASE_CODE
-#if RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(5,5)
+#if RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(5,2)
 #define __DEFINE_IPHDR_HELPERS__
 #endif
 #else
