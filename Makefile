@@ -43,6 +43,7 @@ patch:
 
 buildtest:
 	SRCDIRS=`find ~/linux-src -mindepth 1 -maxdepth 1 -type d -name 'linux-*' | sort -r -n`; \
+	SRCDIRS="$${SRCDIRS} `find ~/linux-src/centos -mindepth 2 -maxdepth 2 -type d -name 'linux-*' | sort -r -n`"; \
 	for d in $${SRCDIRS}; do \
 		$(MAKE) clean && $(MAKE) -C . KSRC=$${d} modules; \
 		if [ $$? != 0 ]; then \
