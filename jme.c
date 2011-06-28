@@ -1854,11 +1854,9 @@ jme_powersave_phy(struct jme_adapter *jme)
 {
 	if (jme->reg_pmcs) {
 		jme_set_100m_half(jme);
-
 		if (jme->reg_pmcs & (PMCS_LFEN | PMCS_LREN))
 			jme_wait_link(jme);
-
-		jwrite32(jme, JME_PMCS, jme->reg_pmcs);
+		jme_clear_pm(jme);
 	} else {
 		jme_phy_off(jme);
 	}
@@ -3196,15 +3194,6 @@ jme_init_one(struct pci_dev *pdev,
 	set_bit(JME_FLAG_TXCSUM, &jme->flags);
 	set_bit(JME_FLAG_TSO, &jme->flags);
 
-	jme_clear_pm(jme);
-	pci_set_power_state(jme->pdev, PCI_D0);
-#ifndef JME_NEW_PM_API
-	jme_pci_wakeup_enable(jme, true);
-#endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-	device_set_wakeup_enable(&jme->pdev->dev, true);
-#endif
-
 	/*
 	 * Get Max Read Req Size from PCI Config Space
 	 */
@@ -3256,6 +3245,15 @@ jme_init_one(struct pci_dev *pdev,
 	jme->mii_if.reg_num_mask = 0x1F;
 	jme->mii_if.mdio_read = jme_mdio_read;
 	jme->mii_if.mdio_write = jme_mdio_write;
+
+	jme_clear_pm(jme);
+	pci_set_power_state(jme->pdev, PCI_D0);
+#ifndef JME_NEW_PM_API
+	jme_pci_wakeup_enable(jme, true);
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	device_set_wakeup_enable(&jme->pdev->dev, true);
+#endif
 
 	jme_set_phyfifo_5level(jme);
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,22)
@@ -3341,15 +3339,13 @@ jme_shutdown(struct pci_dev *pdev)
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct jme_adapter *jme = netdev_priv(netdev);
 
-	if (jme->reg_pmcs) {
-		jme_powersave_phy(jme);
-		jme_pci_wakeup_enable(jme, true);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-		device_set_wakeup_enable(&jme->pdev->dev, true);
+	jme_powersave_phy(jme);
+#ifndef JME_NEW_PM_API
+	jme_pci_wakeup_enable(jme, !!(jme->reg_pmcs));
 #endif
-	} else {
-		jme_phy_off(jme);
-	}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	device_set_wakeup_enable(&jme->pdev->dev, !!(jme->reg_pmcs));
+#endif
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
@@ -3407,10 +3403,9 @@ jme_suspend(struct pci_dev *pdev, pm_message_t state)
 	jme_powersave_phy(jme);
 #ifndef JME_NEW_PM_API
 	pci_save_state(pdev);
-	jme_pci_wakeup_enable(jme, true);
+	jme_pci_wakeup_enable(jme, !!(jme->reg_pmcs));
 	pci_set_power_state(pdev, PCI_D3hot);
 #endif
-	jme_clear_pm(jme);
 
 	return 0;
 }
