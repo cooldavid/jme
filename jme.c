@@ -979,11 +979,29 @@ static u16
 jme_udpsum(struct sk_buff *skb)
 {
 	u16 csum = 0xFFFFu;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+	struct iphdr *iph;
+	int iphlen;
+	struct udphdr *udph;
+#endif
 
 	if (skb->len < (ETH_HLEN + sizeof(struct iphdr)))
 		return csum;
 	if (skb->protocol != htons(ETH_P_IP))
 		return csum;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
+	iph = (struct iphdr *)skb_pull(skb, ETH_HLEN);
+	iphlen = (iph->ihl << 2);
+	if ((iph->protocol != IPPROTO_UDP) ||
+	    (skb->len < (iphlen + sizeof(struct udphdr)))) {
+		skb_push(skb, ETH_HLEN);
+		return csum;
+	}
+	udph = (struct udphdr *)skb_pull(skb, iphlen);
+	csum = udph->check;
+	skb_push(skb, iphlen);
+	skb_push(skb, ETH_HLEN);
+#else
 	skb_set_network_header(skb, ETH_HLEN);
 	if ((ip_hdr(skb)->protocol != IPPROTO_UDP) ||
 	    (skb->len < (ETH_HLEN +
@@ -997,6 +1015,7 @@ jme_udpsum(struct sk_buff *skb)
 	csum = udp_hdr(skb)->check;
 	skb_reset_transport_header(skb);
 	skb_reset_network_header(skb);
+#endif
 
 	return csum;
 }
