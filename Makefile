@@ -36,7 +36,7 @@ namespacecheck: modules
 
 install: modules
 	install -m 644 $(MODNAME).ko $(MINSTDIR)
-	depmod $(KVER) $(MINSTDIR)/$(MODNAME).ko
+	depmod -a $(KVER)
 
 patch:
 	@/usr/bin/diff -uar -X dontdiff ../../trunc ./ > bc.patch || echo > /dev/null
