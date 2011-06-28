@@ -43,11 +43,11 @@
 	NETIF_MSG_TX_ERR | \
 	NETIF_MSG_HW)
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
+#ifndef pr_err
 #define pr_err(fmt, arg...) \
 	printk(KERN_ERR fmt, ##arg)
 #endif
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,33)
+#ifndef netdev_err
 #define netdev_err(netdev, fmt, arg...) \
 	pr_err(fmt, ##arg)
 #endif
@@ -95,10 +95,14 @@ do {									\
 #define msg_hw(priv, fmt, args...) \
 	jme_msg(KERN_ERR, hw, priv, fmt, ## args)
 
+#ifndef netif_info
 #define netif_info(priv, type, dev, fmt, args...) \
 	msg_ ## type(priv, fmt, ## args)
+#endif
+#ifndef netif_err
 #define netif_err(priv, type, dev, fmt, args...) \
 	msg_ ## type(priv, fmt, ## args)
+#endif
 #endif
 
 #ifndef NETIF_F_TSO6
