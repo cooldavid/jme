@@ -59,6 +59,19 @@ module_param(no_extplug, int, 0);
 MODULE_PARM_DESC(no_extplug,
 	"Do not use external plug signal for pseudo hot-plug.");
 
+static void
+jme_pci_wakeup_enable(struct jme_adapter *jme, int enable)
+{
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
+	pci_enable_wake(jme->pdev, PCI_D1, enable);
+	pci_enable_wake(jme->pdev, PCI_D2, enable);
+	pci_enable_wake(jme->pdev, PCI_D3hot, enable);
+	pci_enable_wake(jme->pdev, PCI_D3cold, enable);
+#else
+	pci_pme_active(jme->pdev, enable);
+#endif
+}
+
 static int
 jme_mdio_read(struct net_device *netdev, int phy, int reg)
 {
@@ -274,13 +287,7 @@ jme_reset_mac_processor(struct jme_adapter *jme)
 static inline void
 jme_clear_pm(struct jme_adapter *jme)
 {
-	jwrite32(jme, JME_PMCS, 0xFFFF0000 | jme->reg_pmcs);
-	pci_set_power_state(jme->pdev, PCI_D0);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
-	pci_enable_wake(jme->pdev, PCI_D0, false);
-#else
-	device_set_wakeup_enable(&jme->pdev->dev, false);
-#endif
+	jwrite32(jme, JME_PMCS, PMCS_STMASK | jme->reg_pmcs);
 }
 
 static int
@@ -2634,10 +2641,12 @@ jme_set_wol(struct net_device *netdev,
 
 	jwrite32(jme, JME_PMCS, jme->reg_pmcs);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-	device_set_wakeup_enable(&jme->pdev->dev, jme->reg_pmcs);
+#ifndef JME_NEW_PM_API
+	jme_pci_wakeup_enable(jme, !!(jme->reg_pmcs));
 #endif
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	device_set_wakeup_enable(&jme->pdev->dev, !!(jme->reg_pmcs));
+#endif
 	return 0;
 }
 
@@ -3186,6 +3195,15 @@ jme_init_one(struct pci_dev *pdev,
 	set_bit(JME_FLAG_TXCSUM, &jme->flags);
 	set_bit(JME_FLAG_TSO, &jme->flags);
 
+	jme_clear_pm(jme);
+	pci_set_power_state(jme->pdev, PCI_D0);
+#ifndef JME_NEW_PM_API
+	jme_pci_wakeup_enable(jme, true);
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	device_set_wakeup_enable(&jme->pdev->dev, true);
+#endif
+
 	/*
 	 * Get Max Read Req Size from PCI Config Space
 	 */
@@ -3238,7 +3256,6 @@ jme_init_one(struct pci_dev *pdev,
 	jme->mii_if.mdio_read = jme_mdio_read;
 	jme->mii_if.mdio_write = jme_mdio_write;
 
-	jme_clear_pm(jme);
 	jme_set_phyfifo_5level(jme);
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,22)
 	pci_read_config_byte(pdev, PCI_REVISION_ID, &jme->pcirev);
@@ -3323,12 +3340,15 @@ jme_shutdown(struct pci_dev *pdev)
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct jme_adapter *jme = netdev_priv(netdev);
 
-	jme_powersave_phy(jme);
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
-	pci_enable_wake(pdev, PCI_D3hot, true);
-#else
-	pci_pme_active(pdev, true);
+	if (jme->reg_pmcs) {
+		jme_powersave_phy(jme);
+		jme_pci_wakeup_enable(jme, true);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+		device_set_wakeup_enable(&jme->pdev->dev, true);
 #endif
+	} else {
+		jme_phy_off(jme);
+	}
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
@@ -3343,13 +3363,13 @@ jme_shutdown(struct pci_dev *pdev)
 
 #ifdef JME_HAVE_PM
 static int
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
-jme_suspend(struct pci_dev *pdev, pm_message_t state)
-#else
+#ifdef JME_NEW_PM_API
 jme_suspend(struct device *dev)
+#else
+jme_suspend(struct pci_dev *pdev, pm_message_t state)
 #endif
 {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#ifdef JME_NEW_PM_API
 	struct pci_dev *pdev = to_pci_dev(dev);
 #endif
 	struct net_device *netdev = pci_get_drvdata(pdev);
@@ -3384,34 +3404,32 @@ jme_suspend(struct device *dev)
 	tasklet_hi_enable(&jme->rxempty_task);
 
 	jme_powersave_phy(jme);
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+#ifndef JME_NEW_PM_API
 	pci_save_state(pdev);
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,27)
-	pci_enable_wake(pdev, PCI_D3hot, true);
-#else
-	pci_pme_active(pdev, true);
-#endif
+	jme_pci_wakeup_enable(jme, true);
 	pci_set_power_state(pdev, PCI_D3hot);
 #endif
+	jme_clear_pm(jme);
 
 	return 0;
 }
 
 static int
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
-jme_resume(struct pci_dev *pdev)
-#else
+#ifdef JME_NEW_PM_API
 jme_resume(struct device *dev)
+#else
+jme_resume(struct pci_dev *pdev)
 #endif
 {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#ifdef JME_NEW_PM_API
 	struct pci_dev *pdev = to_pci_dev(dev);
 #endif
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct jme_adapter *jme = netdev_priv(netdev);
 
 	jme_clear_pm(jme);
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+#ifndef JME_NEW_PM_API
+	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
 #endif
 
