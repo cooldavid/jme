@@ -2155,7 +2155,8 @@ jme_stop_queue_if_full(struct jme_adapter *jme)
 			(jiffies - txbi->start_xmit) >= TX_TIMEOUT &&
 			txbi->skb)) {
 		netif_stop_queue(jme->dev);
-		netif_info(jme, tx_queued, jme->dev, "TX Queue Stopped %d@%lu\n", idx, jiffies);
+		netif_info(jme, tx_queued, jme->dev,
+			   "TX Queue Stopped %d@%lu\n", idx, jiffies);
 	}
 }
 
@@ -2638,13 +2639,13 @@ jme_set_wol(struct net_device *netdev,
 		jme->reg_pmcs |= PMCS_MFEN;
 
 	jwrite32(jme, JME_PMCS, jme->reg_pmcs);
-
 #ifndef JME_NEW_PM_API
 	jme_pci_wakeup_enable(jme, !!(jme->reg_pmcs));
 #endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 	device_set_wakeup_enable(&jme->pdev->dev, !!(jme->reg_pmcs));
 #endif
+
 	return 0;
 }
 
@@ -3252,7 +3253,7 @@ jme_init_one(struct pci_dev *pdev,
 	jme_pci_wakeup_enable(jme, true);
 #endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-	device_set_wakeup_enable(&jme->pdev->dev, true);
+	device_set_wakeup_enable(&pdev->dev, true);
 #endif
 
 	jme_set_phyfifo_5level(jme);
@@ -3445,14 +3446,14 @@ jme_resume(struct pci_dev *pdev)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#ifdef JME_NEW_PM_API
 static SIMPLE_DEV_PM_OPS(jme_pm_ops, jme_suspend, jme_resume);
 #define JME_PM_OPS (&jme_pm_ops)
 #endif
 
 #else
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#ifdef JME_NEW_PM_API
 #define JME_PM_OPS NULL
 #endif
 #endif
@@ -3473,7 +3474,7 @@ static struct pci_driver jme_driver = {
 	.probe          = jme_init_one,
 	.remove         = __devexit_p(jme_remove_one),
 	.shutdown       = jme_shutdown,
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+#ifndef JME_NEW_PM_API
 	.suspend        = jme_suspend,
 	.resume         = jme_resume
 #else
