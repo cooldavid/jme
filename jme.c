@@ -3331,7 +3331,17 @@ jme_shutdown(struct pci_dev *pdev)
 #endif
 }
 
-#ifdef CONFIG_PM
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
+	#ifdef CONFIG_PM
+		#define JME_HAVE_PM
+	#endif
+#else
+	#ifdef CONFIG_PM_SLEEP
+		#define JME_HAVE_PM
+	#endif
+#endif
+
+#ifdef JME_HAVE_PM
 static int
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
 jme_suspend(struct pci_dev *pdev, pm_message_t state)
