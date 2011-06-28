@@ -41,6 +41,15 @@ install: modules
 patch:
 	@/usr/bin/diff -uar -X dontdiff ../../trunc ./ > bc.patch || echo > /dev/null
 
+buildtest:
+	SRCDIRS=`find ~/linux-src -mindepth 1 -maxdepth 1 -type d -name 'linux-*' | sort -r -n`; \
+	for d in $${SRCDIRS}; do \
+		$(MAKE) -C . KSRC=$${d} modules; \
+		if [ $$? != 0 ]; then \
+			exit $$?; \
+		fi; \
+	done
+
 clean:
 	@rm -rf $(MODNAME).ko $(TEMPFILES)
 
