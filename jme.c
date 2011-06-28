@@ -59,6 +59,7 @@ module_param(no_extplug, int, 0);
 MODULE_PARM_DESC(no_extplug,
 	"Do not use external plug signal for pseudo hot-plug.");
 
+#ifndef JME_NEW_PM_API
 static void
 jme_pci_wakeup_enable(struct jme_adapter *jme, int enable)
 {
@@ -71,6 +72,7 @@ jme_pci_wakeup_enable(struct jme_adapter *jme, int enable)
 	pci_pme_active(jme->pdev, enable);
 #endif
 }
+#endif
 
 static int
 jme_mdio_read(struct net_device *netdev, int phy, int reg)
