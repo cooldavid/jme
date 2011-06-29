@@ -27,7 +27,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME	"jme"
-#define DRV_VERSION	"1.0.8-jmmod"
+#define DRV_VERSION	"1.0.8.1-jmmod"
 #define PFX		DRV_NAME ": "
 
 #define PCI_DEVICE_ID_JMICRON_JMC250	0x0250
