@@ -116,6 +116,10 @@ do {									\
 #define __USE_NDO_FIX_FEATURES__
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
+#define __UNIFY_VLAN_RX_PATH__
+#endif
+
 /*
  * Extra PCI Configuration space interface
  */
@@ -591,7 +595,9 @@ struct jme_adapter {
 	u32			msg_enable;
 	struct ethtool_cmd	old_ecmd;
 	unsigned int		old_mtu;
+#ifndef __UNIFY_VLAN_RX_PATH__
 	struct vlan_group	*vlgrp;
+#endif
 	struct dynpcc_info	dpi;
 	atomic_t		intr_sem;
 	atomic_t		link_changing;
@@ -599,9 +605,11 @@ struct jme_adapter {
 	atomic_t		rx_cleaning;
 	atomic_t		rx_empty;
 	int			(*jme_rx)(struct sk_buff *skb);
+#ifndef __UNIFY_VLAN_RX_PATH__
 	int			(*jme_vlan_rx)(struct sk_buff *skb,
 					  struct vlan_group *grp,
 					  unsigned short vlan_tag);
+#endif
 	DECLARE_NAPI_STRUCT
 	DECLARE_NET_DEVICE_STATS
 };

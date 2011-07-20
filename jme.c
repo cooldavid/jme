@@ -1099,6 +1099,7 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 			skb_checksum_none_assert(skb);
 #endif
 
+#ifndef __UNIFY_VLAN_RX_PATH__
 		if (rxdesc->descwb.flags & cpu_to_le16(RXWBFLAG_TAGON)) {
 			if (jme->vlgrp) {
 				jme->jme_vlan_rx(skb, jme->vlgrp,
@@ -1110,6 +1111,15 @@ jme_alloc_and_feed_skb(struct jme_adapter *jme, int idx)
 		} else {
 			jme->jme_rx(skb);
 		}
+#else
+		if (rxdesc->descwb.flags & cpu_to_le16(RXWBFLAG_TAGON)) {
+			u16 vid = le16_to_cpu(rxdesc->descwb.vlan);
+
+			__vlan_hwaccel_put_tag(skb, vid);
+			NET_STAT(jme).rx_bytes += 4;
+		}
+		jme->jme_rx(skb);
+#endif
 
 		if ((rxdesc->descwb.flags & cpu_to_le16(RXWBFLAG_DEST)) ==
 		    cpu_to_le16(RXWBFLAG_DEST_MUL))
@@ -2411,6 +2421,7 @@ static inline void jme_resume_rx(struct jme_adapter *jme)
 	atomic_inc(&jme->link_changing);
 }
 
+#ifndef __UNIFY_VLAN_RX_PATH__
 static void
 jme_vlan_rx_register(struct net_device *netdev, struct vlan_group *grp)
 {
@@ -2420,6 +2431,7 @@ jme_vlan_rx_register(struct net_device *netdev, struct vlan_group *grp)
 	jme->vlgrp = grp;
 	jme_resume_rx(jme);
 }
+#endif
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,21)
 static void
@@ -2549,7 +2561,9 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 	    test_bit(JME_FLAG_POLL, &jme->flags)) {
 		clear_bit(JME_FLAG_POLL, &jme->flags);
 		jme->jme_rx = netif_rx;
+#ifndef __UNIFY_VLAN_RX_PATH__
 		jme->jme_vlan_rx = vlan_hwaccel_rx;
+#endif
 		dpi->cur		= PCC_P1;
 		dpi->attempt		= PCC_P1;
 		dpi->cnt		= 0;
@@ -2559,7 +2573,9 @@ jme_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ecmd)
 		   !(test_bit(JME_FLAG_POLL, &jme->flags))) {
 		set_bit(JME_FLAG_POLL, &jme->flags);
 		jme->jme_rx = netif_receive_skb;
+#ifndef __UNIFY_VLAN_RX_PATH__
 		jme->jme_vlan_rx = vlan_hwaccel_receive_skb;
+#endif
 		jme_interrupt_mode(jme);
 	}
 
@@ -3099,7 +3115,9 @@ static const struct net_device_ops jme_netdev_ops = {
 	.ndo_set_multicast_list	= jme_set_multi,
 	.ndo_change_mtu		= jme_change_mtu,
 	.ndo_tx_timeout		= jme_tx_timeout,
+#ifndef __UNIFY_VLAN_RX_PATH__
 	.ndo_vlan_rx_register	= jme_vlan_rx_register,
+#endif
 #ifdef __USE_NDO_FIX_FEATURES__
 	.ndo_fix_features       = jme_fix_features,
 	.ndo_set_features       = jme_set_features,
@@ -3203,7 +3221,9 @@ jme_init_one(struct pci_dev *pdev,
 	jme->pdev = pdev;
 	jme->dev = netdev;
 	jme->jme_rx = netif_rx;
+#ifndef __UNIFY_VLAN_RX_PATH__
 	jme->jme_vlan_rx = vlan_hwaccel_rx;
+#endif
 	jme->old_mtu = netdev->mtu = 1500;
 	jme->phylink = 0;
 	jme->tx_ring_size = 1 << 10;
