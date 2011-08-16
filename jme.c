@@ -3112,7 +3112,11 @@ static const struct net_device_ops jme_netdev_ops = {
 	.ndo_do_ioctl		= jme_ioctl,
 	.ndo_start_xmit		= jme_start_xmit,
 	.ndo_set_mac_address	= jme_set_macaddr,
+#ifndef __USE_NDO_SET_RX_MODE__
 	.ndo_set_multicast_list	= jme_set_multi,
+#else
+	.ndo_set_rx_mode	= jme_set_multi,
+#endif
 	.ndo_change_mtu		= jme_change_mtu,
 	.ndo_tx_timeout		= jme_tx_timeout,
 #ifndef __UNIFY_VLAN_RX_PATH__

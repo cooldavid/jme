@@ -118,6 +118,7 @@ do {									\
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
 #define __UNIFY_VLAN_RX_PATH__
+#define __USE_NDO_SET_RX_MODE__
 #endif
 
 /*
