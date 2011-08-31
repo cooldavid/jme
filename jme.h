@@ -121,6 +121,10 @@ do {									\
 #define __USE_NDO_SET_RX_MODE__
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+#define __USE_SKB_FRAG_API__
+#endif
+
 /*
  * Extra PCI Configuration space interface
  */

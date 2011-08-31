@@ -2002,8 +2002,14 @@ jme_map_tx_skb(struct jme_adapter *jme, struct sk_buff *skb, int idx)
 		ctxdesc = txdesc + ((idx + i + 2) & (mask));
 		ctxbi = txbi + ((idx + i + 2) & (mask));
 
+#ifndef __USE_SKB_FRAG_API__
 		jme_fill_tx_map(jme->pdev, ctxdesc, ctxbi, frag->page,
 				 frag->page_offset, frag->size, hidma);
+#else
+		jme_fill_tx_map(jme->pdev, ctxdesc, ctxbi,
+				skb_frag_page(frag),
+				frag->page_offset, frag->size, hidma);
+#endif
 	}
 
 	len = skb_is_nonlinear(skb) ? skb_headlen(skb) : skb->len;
