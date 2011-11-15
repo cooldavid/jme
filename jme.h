@@ -125,6 +125,10 @@ do {									\
 #define __USE_SKB_FRAG_API__
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,3,0)
+#define __NEW_FIX_FEATURES_TYPE__
+#endif
+
 /*
  * Extra PCI Configuration space interface
  */
