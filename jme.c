@@ -2069,7 +2069,12 @@ jme_fill_tx_map(struct pci_dev *pdev,
 		struct page *page,
 		u32 page_offset,
 		u32 len,
-		bool hidma)
+#ifdef __NO_BOOL__
+		u8 hidma
+#else
+		bool hidma
+#endif
+		)
 {
 	dma_addr_t dmaaddr;
 
@@ -2103,7 +2108,11 @@ jme_map_tx_skb(struct jme_adapter *jme, struct sk_buff *skb, int idx)
 	struct jme_ring *txring = &(jme->txring[0]);
 	struct txdesc *txdesc = txring->desc, *ctxdesc;
 	struct jme_buffer_info *txbi = txring->bufinf, *ctxbi;
+#ifdef __NO_BOOL__
+	u8 hidma = !!(jme->dev->features & NETIF_F_HIGHDMA);
+#else
 	bool hidma = jme->dev->features & NETIF_F_HIGHDMA;
+#endif
 	int i, nr_frags = skb_shinfo(skb)->nr_frags;
 	int mask = jme->tx_ring_mask;
 	const struct skb_frag_struct *frag;

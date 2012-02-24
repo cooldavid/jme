@@ -112,6 +112,10 @@ do {									\
 #define NETIF_F_IPV6_CSUM 0
 #endif
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,18)
+#define __NO_BOOL__
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
 #define __USE_NDO_FIX_FEATURES__
 #endif
