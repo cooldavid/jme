@@ -782,7 +782,12 @@ jme_make_new_rx_buf(struct jme_adapter *jme, int i)
 	mapping = pci_map_page(jme->pdev, virt_to_page(skb->data),
 			       offset_in_page(skb->data), skb_tailroom(skb),
 			       PCI_DMA_FROMDEVICE);
-	if (unlikely(pci_dma_mapping_error(jme->pdev, mapping))) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,26)
+	if (unlikely(pci_dma_mapping_error(jme->pdev, mapping)))
+#else
+	if (unlikely(pci_dma_mapping_error(mapping)))
+#endif
+	{
 		dev_kfree_skb(skb);
 		return -ENOMEM;
 	}
